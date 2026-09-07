@@ -1,0 +1,50 @@
+country,name,min_votes,limit,note
+IN,India,50,60,"Parallel Cinema through to contemporary. Ray and Ghatak also arrive via the canon lists."
+IR,Iran,20,50,"Only ~110 Iranian films on TMDB clear 25 votes at all, so take nearly everything."
+SN,Senegal,5,25,"Sembene and Mambety. TMDB has barely a dozen; this is the constraint §6 warns about."
+ML,Mali,5,15,"Cisse, Sissako."
+BF,Burkina Faso,5,15,"Ouedraogo, and FESPACO's home."
+EG,Egypt,20,40,"Chahine and the Cairo studio era."
+DZ,Algeria,5,20,"Pontecorvo's Algiers is Italian; this is Algerian production."
+MA,Morocco,5,20,
+TN,Tunisia,5,15,
+ZA,South Africa,20,25,
+NG,Nigeria,20,25,"Nollywood is enormous and almost none of it is on TMDB with votes."
+ET,Ethiopia,3,10,
+BR,Brazil,40,50,"Cinema Novo and after."
+AR,Argentina,30,45,
+MX,Mexico,40,50,"Golden Age, Bunuel's Mexican period, and the contemporary wave."
+CL,Chile,15,25,
+CO,Colombia,15,20,
+CU,Cuba,10,20,"Alea, and the ICAIC years."
+PE,Peru,10,15,
+UY,Uruguay,10,15,
+BO,Bolivia,5,10,"Sanjines."
+TH,Thailand,25,35,"Apichatpong arrives via the canon lists; this is the rest."
+PH,Philippines,15,35,"Brocka, Diaz."
+ID,Indonesia,20,30,
+VN,Vietnam,10,20,
+MY,Malaysia,10,15,
+SG,Singapore,10,15,
+KH,Cambodia,5,10,"Panh."
+TW,Taiwan,25,40,"Hou, Yang, Tsai."
+CN,China,40,50,"Fifth and Sixth Generation."
+HK,Hong Kong,40,50,"Both new waves, plus the studio era."
+TR,Turkey,25,35,"Ceylan, Guney."
+LB,Lebanon,10,20,
+IL,Israel,20,25,
+PS,Palestine,10,15,"Suleiman, Abu-Assad."
+PL,Poland,25,40,"Film School, Moral Anxiety, Kieslowski."
+CZ,Czechia,20,35,"The New Wave. Note TMDB also uses XC for Czechoslovakia."
+XC,Czechoslovakia,10,30,"Where TMDB files pre-1993 titles."
+HU,Hungary,20,35,"Jancso, Tarr, Szabo."
+RO,Romania,20,30,"The New Wave."
+RS,Serbia,10,20,"Makavejev, Kusturica."
+BG,Bulgaria,10,15,
+RU,Russia,30,40,
+SU,Soviet Union,10,45,"Where TMDB files Tarkovsky, Eisenstein, Paradjanov."
+IS,Iceland,15,15,
+FI,Finland,20,25,"Kaurismaki."
+DK,Denmark,30,35,"Dreyer through Dogme."
+GR,Greece,15,25,"Angelopoulos, Lanthimos' early work."
+PT,Portugal,15,25,"Oliveira, Costa."

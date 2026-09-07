@@ -1,0 +1,50 @@
+{
+  "name": "moviespinner",
+  "version": "0.1.0",
+  "description": "Daily blind-spot film picker",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "import": "tsx src/cli/import.ts",
+    "enrich": "tsx src/cli/enrich.ts",
+    "matches": "tsx src/cli/matches.ts",
+    "coverage": "tsx src/cli/coverage.ts",
+    "pool": "tsx src/cli/pool.ts",
+    "simulate": "tsx src/cli/simulate.ts",
+    "pick": "tsx src/cli/pick.ts",
+    "sync": "tsx src/cli/sync.ts",
+    "report": "tsx src/cli/report.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "better-sqlite3": "^13.0.3",
+    "csv-parse": "^7.0.2",
+    "d3-geo": "^3.1.1",
+    "next": "^16.3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/adm-zip": "^0.5.8",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/d3-geo": "^3.1.1",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/topojson-client": "^3.1.5",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
