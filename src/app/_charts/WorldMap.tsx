@@ -1,18 +1,27 @@
 import { geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import world from 'world-atlas/countries-110m.json' with { type: 'json' };
-
+import { WorldMapClient } from './WorldMapClient';
+import type { Shape } from './WorldMapClient';
 
 /**
- * §7's world map: countries by films watched.
+ * §7's world map: countries by films watched, and now a way in.
  *
- * Rendered as plain SVG on the server. A charting library would be a dependency
- * and a client bundle for something that is one projection and 177 paths.
+ * The projection, the topology and the 177 paths stay on the server. What
+ * crosses to the client is a list of rounded path strings and two counts each
+ * -- d3-geo, topojson and the 100KB atlas never enter the browser bundle, which
+ * is the same trade the rest of the charts make. Clicking a country is a fetch,
+ * not a re-render of the map.
  *
  * Country identity is matched by name rather than code, because world-atlas
  * carries numeric ISO ids and the database carries alpha-2. Names line up for
- * 83 of the 94 codes in the data; the rest are aliased below, and anything that
+ * most of the codes in the data; the rest are aliased below, and anything that
  * still misses is listed under the map instead of being silently dropped.
+ *
+ * Several codes can land on one shape, which is the whole reason `codes` is a
+ * list: Czechia is drawn once and the data holds both CZ and XC for it, and
+ * the Soviet films are on the Russia outline. Folding them together here is
+ * what lets the click ask for all of them at once.
  */
 
 const ALIASES: Record<string, string> = {
@@ -33,6 +42,7 @@ export interface CountryRow {
   code: string;
   name: string;
   count: number;
+  pool: number;
 }
 
 interface MapFeature {
@@ -55,10 +65,9 @@ const path = geoPath(projection);
  * The map at one decimal place.
  *
  * geoPath emits full float precision, which is roughly 1/1000th of a pixel at
- * this size -- invisible, and about 80KB of it. That mattered less when the map
- * had its own route; on a single page that loads everything at once it is worth
- * the two lines. Rounded coordinates are also served twice, once in the HTML
- * and once in the RSC payload, so the saving counts double.
+ * this size -- invisible, and about 80KB of it. Rounded coordinates are also
+ * served twice, once in the HTML and once in the RSC payload, so the saving
+ * counts double.
  */
 const toPath = (entry: MapFeature): string | null => {
   const d = path(entry as never);
@@ -66,59 +75,51 @@ const toPath = (entry: MapFeature): string | null => {
 };
 
 export function WorldMap({ countries }: { countries: CountryRow[] }) {
-  const byName = new Map<string, number>();
+  const featureNames = new Set(collection.features.map((f) => f.properties.name.toLowerCase()));
+
+  const watched = new Map<string, number>();
+  const pool = new Map<string, number>();
+  const codesByName = new Map<string, string[]>();
   const unmatched: string[] = [];
 
-  const featureNames = new Set(collection.features.map((f) => f.properties.name.toLowerCase()));
   for (const row of countries) {
     const label = (ALIASES[row.code] ?? row.name).toLowerCase();
     if (!featureNames.has(label)) {
-      unmatched.push(`${row.name} (${row.count})`);
+      // Only worth reporting where there is something to lose. A pool-only
+      // country the projection cannot draw is a gap in the atlas, not in you.
+      if (row.count > 0) unmatched.push(`${row.name} (${row.count})`);
       continue;
     }
-    byName.set(label, (byName.get(label) ?? 0) + row.count);
+    watched.set(label, (watched.get(label) ?? 0) + row.count);
+    pool.set(label, (pool.get(label) ?? 0) + row.pool);
+    codesByName.set(label, [...(codesByName.get(label) ?? []), row.code]);
   }
 
-  const max = Math.max(1, ...byName.values());
-  // Log scale, because the United States would otherwise flatten everything
-  // else into the same shade of nothing.
-  const shade = (count: number): string => {
-    if (count === 0) return 'var(--color-panel)';
-    const intensity = Math.log10(1 + count) / Math.log10(1 + max);
-    return `color-mix(in oklab, var(--color-accent) ${Math.round(18 + intensity * 82)}%, var(--color-panel))`;
-  };
+  const max = Math.max(1, ...watched.values());
+
+  const shapes: Shape[] = [];
+  for (const entry of collection.features) {
+    const d = toPath(entry);
+    if (!d) continue;
+    const key = entry.properties.name.toLowerCase();
+    shapes.push({
+      id: entry.id,
+      name: entry.properties.name,
+      d,
+      watched: watched.get(key) ?? 0,
+      pool: pool.get(key) ?? 0,
+      codes: codesByName.get(key) ?? [],
+    });
+  }
 
   return (
-    <figure>
-      <svg
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="h-auto w-full"
-        role="img"
-        aria-label="World map of countries by films watched"
-      >
-        {collection.features.map((entry) => {
-          const count = byName.get(entry.properties.name.toLowerCase()) ?? 0;
-          const d = toPath(entry);
-          if (!d) return null;
-          return (
-            <path
-              key={entry.id}
-              d={d}
-              fill={shade(count)}
-              stroke="var(--color-ink)"
-              strokeWidth={0.4}
-            >
-              <title>{`${entry.properties.name}: ${count} ${count === 1 ? 'film' : 'films'}`}</title>
-            </path>
-          );
-        })}
-      </svg>
-      <figcaption className="mt-3 flex flex-wrap items-center gap-4 text-xs text-muted">
-        <span>
-          {byName.size} countries on the map, darkest is {max}
-        </span>
-        {unmatched.length > 0 ? <span>Not drawable: {unmatched.join(', ')}</span> : null}
-      </figcaption>
-    </figure>
+    <WorldMapClient
+      shapes={shapes}
+      width={WIDTH}
+      height={HEIGHT}
+      max={max}
+      drawn={watched.size}
+      unmatched={unmatched}
+    />
   );
 }

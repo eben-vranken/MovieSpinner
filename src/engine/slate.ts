@@ -35,6 +35,8 @@ export interface SlateResult {
   /** The best-weighted film's probability in the undepleted pool. */
   topShare: number;
   poolSize: number;
+  /** Set when the five came from a campaign queue rather than a weighted draw. */
+  campaignId?: number;
 }
 
 export function drawSlate(
@@ -100,9 +102,9 @@ export function persistSlate(db: Db, result: SlateResult): void {
   const insert = db.prepare(
     `INSERT INTO slates
        (slate_date, tmdb_id, position, kind, seed, weight, share, top_share, pool_size,
-        reason_json, lineage_from, lineage_rationale, created_at)
+        reason_json, lineage_from, lineage_rationale, created_at, campaign_id)
      VALUES (@date, @tmdbId, @position, @kind, @seed, @weight, @share, @topShare, @poolSize,
-             @reason, @lineageFrom, @lineageRationale, @createdAt)`,
+             @reason, @lineageFrom, @lineageRationale, @createdAt, @campaignId)`,
   );
 
   const createdAt = new Date().toISOString();
@@ -122,6 +124,7 @@ export function persistSlate(db: Db, result: SlateResult): void {
         lineageFrom: entry.scored.candidate.lineage?.fromTmdbId ?? null,
         lineageRationale: entry.scored.candidate.lineage?.rationale ?? null,
         createdAt,
+        campaignId: result.campaignId ?? null,
       });
     }
   })();

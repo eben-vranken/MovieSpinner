@@ -2,11 +2,13 @@
 
 import { revalidatePath } from 'next/cache';
 import { resolvePick, unresolvePick } from '../engine';
+import { activeCampaign, endCampaign, startCampaign } from '../engine/campaign';
+import type { CampaignKind, CampaignOrdering } from '../engine/campaign';
 import { chooseFromSlate } from '../engine/choose';
 import { lockInFilm as lockIn } from '../engine/lock';
 import { rechooseStalePick } from '../engine/redraw';
 import { rewriteLineageFile } from '../engine/lineage-write';
-import { db } from '../lib/db';
+import { db, today } from '../lib/db';
 import { isRunning, runPipeline, saveUpload } from '../setup/pipeline';
 import { resetEverything } from '../setup/reset';
 
@@ -164,6 +166,48 @@ export async function resetInstall(
   } catch (cause) {
     return { ok: false, error: cause instanceof Error ? cause.message : 'Reset failed.' };
   }
+}
+
+export type CampaignResponse = { ok: true } | { ok: false; error: string };
+
+/**
+ * Commit to a director, movement or country.
+ *
+ * Takes effect on the **next** slate, never today's. Today's five were drawn
+ * this morning and belong to today; reshaping them now would make starting a
+ * campaign a way to get a different set of films this evening, which is the one
+ * thing this whole project refuses to allow.
+ */
+export async function beginCampaign(
+  kind: CampaignKind,
+  subject: string,
+  label: string,
+  ordering: CampaignOrdering,
+): Promise<CampaignResponse> {
+  try {
+    startCampaign(db(), { kind, subject, label, ordering }, today());
+    revalidatePath('/');
+    return { ok: true };
+  } catch (cause) {
+    return {
+      ok: false,
+      error: cause instanceof Error ? cause.message : 'Could not start the campaign.',
+    };
+  }
+}
+
+/**
+ * Stop a campaign early.
+ *
+ * Also does not touch today's slate. If a campaign slate is on the table it
+ * stays there and stays choosable -- ending a campaign is not a reroll either.
+ */
+export async function stopCampaign(): Promise<CampaignResponse> {
+  const handle = db();
+  if (!activeCampaign(handle)) return { ok: false, error: 'No campaign is running.' };
+  endCampaign(handle, 'abandoned', today());
+  revalidatePath('/');
+  return { ok: true };
 }
 
 export async function addLineageEdge(formData: FormData): Promise<void> {

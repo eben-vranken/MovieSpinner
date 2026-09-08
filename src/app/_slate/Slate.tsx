@@ -4,6 +4,7 @@ import { LockIn } from './LockIn';
 import { posterUrl } from '../../lib/db';
 import { reasonSentence } from '../../lib/slate';
 import type { FilmCard, SlateView } from '../../lib/slate';
+import type { CampaignView } from '../../lib/campaign';
 
 /**
  * The top of the page: five films, and the one you took.
@@ -147,7 +148,11 @@ function ChoiceCard({
         <div className="mt-3 border-t border-edge/60 pt-2">
           <Availability film={film} region={slate.region} />
           <p className="mt-1 text-[11px] text-muted">
-            drawn at {(film.share * 100).toFixed(2)}%
+            {/* In a campaign the film was next in a queue, not drawn from a
+                distribution, so quoting a probability would be a fiction. */}
+            {slate.campaignId
+              ? `next up · ${(film.share * 100).toFixed(2)}% in a normal draw`
+              : `drawn at ${(film.share * 100).toFixed(2)}%`}
             {film.timesPassed > 0
               ? ` · passed over ${film.timesPassed} time${film.timesPassed === 1 ? '' : 's'}`
               : ''}
@@ -286,10 +291,13 @@ function PassedOver({ films }: { films: FilmCard[] }) {
   );
 }
 
-export function Slate({ slate }: { slate: SlateView }) {
+export function Slate({ slate, campaign }: { slate: SlateView; campaign: CampaignView | null }) {
   const chosen = slate.chosen
     ? slate.films.find((film) => film.tmdbId === slate.chosen?.tmdbId)
     : undefined;
+  // Only true when *this* slate came from the campaign. A campaign started
+  // today does not retroactively claim a slate drawn this morning.
+  const onCampaign = campaign !== null && slate.campaignId === campaign.campaign.id;
 
   return (
     <section>
@@ -297,12 +305,20 @@ export function Slate({ slate }: { slate: SlateView }) {
         <div>
           <h2 className="text-xs tracking-[0.2em] text-muted uppercase">
             {slate.date}
-            {slate.kind === 'junk-valve' ? ' · junk valve' : ' · blind spot'}
+            {onCampaign
+              ? ` · ${campaign.campaign.label} campaign`
+              : slate.kind === 'junk-valve'
+                ? ' · junk valve'
+                : ' · blind spot'}
           </h2>
           <p className="mt-1 text-sm text-muted">
             {chosen && !slate.chosenIsStale
-              ? 'Chosen. Tomorrow brings five more.'
-              : `Five films, weighted at the gaps in your coverage. Pick one — the choice is final for today.`}
+              ? onCampaign
+                ? `Chosen. ${campaign.remaining} left in the campaign.`
+                : 'Chosen. Tomorrow brings five more.'
+              : onCampaign
+                ? `The next ${slate.films.length} of ${campaign.campaign.label}, in ${campaign.campaign.ordering === 'chronological' ? 'release' : 'canonical'} order. Pick one — the choice is final for today.`
+                : `Five films, weighted at the gaps in your coverage. Pick one — the choice is final for today.`}
           </p>
         </div>
         {slate.streak > 0 ? (

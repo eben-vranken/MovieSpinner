@@ -30,10 +30,24 @@ There is also a **manual override**: search the pool and lock any of its films
 in for today. It reaches the pool, never past it, so it changes which blind spot
 you close and never whether you close one.
 
+And an optional **campaign mode**. Commit to a director, movement or country and
+the five stop being five scattered gaps and become the next five films of that
+subject, in order, until it is finished or you stop. The default draw is
+breadth-first and very good at it, which is exactly why depth needs its own
+mode: the cooldown multiplies a director seen inside a fortnight by 0.06, so
+nobody was ever going to work through a filmography by accident.
+
 - `src/db/migrations/*.sql` is the schema. Add a migration, never edit an applied one.
 - `src/cli/*.ts` are the pipeline commands. `npm run report` verifies steps 1 to 5.
-- `src/app/page.tsx` is the entire UI. There is one route and no navigation;
-  `_charts/`, `_slate/` and `_lineage/` are its private component folders.
+- `src/app/page.tsx` is the entire UI. There is still one route: `_shell/`
+  holds a sidebar that switches between server-rendered sections, which is not
+  navigation -- every section is rendered in the same pass and the shell shows
+  one at a time. `_sections/` holds those sections, and `_charts/`, `_slate/`,
+  `_campaign/`, `_lineage/` and `_browse/` are its private component folders.
+- `src/lib/browse.ts` reads the library as a list rather than as a chart: the
+  pool and the watched set, unioned, filtered on the same buckets the charts
+  are cut by. `/api/pool` is the browse tab, `/api/country` is the click on the
+  world map. Both are read-only and neither can choose a film.
 - `src/lib/analytics.ts` loads every number the page draws, in one pass.
 - `src/setup/pipeline.ts` runs import → enrich → coverage → pool as one job,
   writing progress to `setup_runs`. The page's upload box and `npm run setup`
@@ -52,6 +66,13 @@ you close and never whether you close one.
   choose, once. `lockInFilm` goes through `chooseFromSlate` and therefore
   through the same door, and it fails on a second use exactly as a second click
   does.
+- **A campaign never reshapes a slate that already exists.** It applies to the
+  next slate drawn, never today's -- checked in `ensureSlate`, which only draws
+  when the day has no rows. Without that rule, "start a campaign, look, abandon
+  it" would be a reroll with extra steps. Ending one does not touch today's
+  slate either. One campaign at a time, enforced by a partial unique index
+  rather than by code. Campaign slates are deterministic (`drawCampaignSlate`
+  is a queue, not a sample) and suspend the junk valve.
 - **The override reaches the pool and no further.** `lockInFilm` refuses a film
   that is not in `pool`, and refuses one already picked on an earlier day. It
   scores the film with the same `scoreAll` the slate used, so a manual pick is
@@ -73,6 +94,13 @@ you close and never whether you close one.
 - **Every tuning number lives in `src/engine/tuning.ts`.** No magic constants in
   the scoring path; the point is being able to read why a film was chosen.
   `slateSize` lives there too.
+- **Browsing is looking, not choosing.** The browse tab and the map's country
+  panel read; they never write. The only doors into `picks` are still
+  `chooseFromSlate` and `lockInFilm`, and neither is reachable from a poster
+  wall -- a grid of four thousand films with a "choose" button on each would be
+  the reroll this project spent eleven steps not having. The dim-what-I-have-
+  seen toggle is CSS keyed off `data-seen`, so it works the same on a
+  server-rendered grid and a fetched one.
 - **Charts follow one system.** Palette, mark specs and spacers are documented at
   the top of `src/app/_charts/plots.tsx` and the colours are CSS variables in
   `globals.css`, validated against the panel surface. Every chart carries a

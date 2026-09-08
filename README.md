@@ -92,6 +92,10 @@ npm run slate -- --find solaris # search the pool by title
 npm run slate -- --lock 593     # lock any pool film in for today, on or off the slate
 npm run slate -- --watched      # mark the chosen film watched
 npm run slate -- --history 14
+npm run slate -- --campaigns director   # subjects worth committing to
+npm run slate -- --campaign director:6648 --order chronological
+npm run slate -- --campaign-status
+npm run slate -- --end-campaign
 ```
 
 ## Where things stand
@@ -766,6 +770,62 @@ cold one it is minutes, nearly all of it TMDB. The first slate on a brand new
 install came out as *The Time to Live and the Time to Die*, *Onibaba*, *Sansho
 the Bailiff*, *Room 999* and *Morgiana* — which is the engine working, since a
 new user has no coverage anywhere and the draw falls back on stature.
+
+## Step 12: campaign mode
+
+The dashboard had been saying it for weeks and nobody was reading it: **268 of
+338 directors seen exactly once.** The engine was not merely failing to build
+depth, it was preventing it. The cooldown multiplies a director seen in the last
+fortnight by **0.06**, which is correct for a blind-spot machine and exactly
+wrong for the thing the word cinephile points at. Nobody ever understood Ozu by
+watching one Ozu every four months.
+
+So campaigns, as an optional mode. Commit to a director, a movement or a country
+and the daily five become the next five films of that subject, in order, until
+you finish it or stop. Still one film a day, still final, still logged.
+
+### It is a queue, not a draw
+
+`drawCampaignSlate` has no seed and no weighting, because "the next five in
+order" is not a sample. Films are still scored — so the card can say what the
+engine makes of each one and the pick row keeps the same shape as every other
+day — but the score decides nothing. `share` is recorded as the probability the
+film *would* have had in an ordinary draw, and the card says so rather than
+quoting a number that decided nothing.
+
+Two orderings. **Chronological** is the default, because a body of work is an
+argument that develops and watching it shuffled is reading the chapters out of
+order. **Canonical** sorts by TSPDT rank for when you want the peaks instead:
+the same Ozu campaign opens with *I Flunked, But…* (1930) one way and *Tokyo
+Story* (TSPDT #4) the other.
+
+### The rule that makes it safe
+
+**A campaign never reshapes a slate that already exists.** It applies to the
+next slate drawn, never today's. Without that, "start a campaign, look at the
+five, abandon it" would be a reroll with extra steps — and ending a campaign
+does not touch today's slate either, for the same reason. One campaign at a
+time, enforced by a partial unique index on `status` rather than by code:
+committing to two things is not committing.
+
+Campaigns also suspend the junk valve. Sunday off is a release valve for
+homework you did not choose; homework you did choose does not need one.
+
+### What it looks like
+
+Ozu, chronological, three days running — which the cooldown would otherwise have
+made almost impossible:
+
+```
+day 1  offered 1930, 1930, 1930, 1931, 1931  ->  I Flunked, But... (1930)
+day 2  offered 1930, 1930, 1931, 1931, 1932  ->  That Night's Wife (1930)
+day 3  offered 1930, 1931, 1931, 1932, 1932  ->  Walk Cheerfully (1930)
+```
+
+The picker sorts directors by how many you have already watched (deepen what you
+started) and movements and countries by how few (open what you have not). Only
+subjects with at least `campaign.minFilms` unseen films are offered: a campaign
+of three is a double bill with a spare.
 
 ## Data shape
 

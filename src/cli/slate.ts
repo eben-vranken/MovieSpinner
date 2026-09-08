@@ -3,6 +3,8 @@ import { loadMovements } from '../coverage';
 import { createEngine, loadState, resolvePick, unresolvePick } from '../engine';
 import { chooseFromSlate } from '../engine/choose';
 import { lockInFilm } from '../engine/lock';
+import { activeCampaign, campaignQueue, endCampaign, startCampaign } from '../engine/campaign';
+import type { CampaignKind, CampaignOrdering } from '../engine/campaign';
 import { drawSlate, persistSlate } from '../engine/slate';
 import { rechooseStalePick } from '../engine/redraw';
 import { loadLineage } from '../engine/lineage';
@@ -26,6 +28,13 @@ import { tmdbConfig } from '../config';
  *   npm run slate -- --rechoose 1234   # replace a pick stranded by a pool rebuild
  *   npm run slate -- --date 2026-09-10
  *   npm run slate -- --history 14
+ *
+ * Campaign mode:
+ *   npm run slate -- --campaigns director        # subjects worth committing to
+ *   npm run slate -- --campaign director:5219    # commit (kind:subject)
+ *   npm run slate -- --campaign movement:silent-era --order canonical
+ *   npm run slate -- --campaign-status
+ *   npm run slate -- --end-campaign
  */
 
 const arg = (name: string, fallback: string): string => {
@@ -66,6 +75,115 @@ function main(): void {
   loadLineage(db);
 
   const date = arg('date', new Date().toISOString().slice(0, 10));
+
+  if (process.argv.includes('--campaigns')) {
+    const kind = (arg('campaigns', 'director') as CampaignKind) ?? 'director';
+    const min = 4;
+    const rows =
+      kind === 'director'
+        ? (db
+            .prepare(
+              `SELECT pe.person_id AS subject, pe.name AS label, COUNT(DISTINCT p.tmdb_id) AS n
+               FROM pool p JOIN tmdb_film_crew c ON c.tmdb_id = p.tmdb_id AND c.job = 'Director'
+               JOIN tmdb_people pe ON pe.person_id = c.person_id
+               GROUP BY pe.person_id HAVING n >= ? ORDER BY n DESC LIMIT 30`,
+            )
+            .all(min) as { subject: string | number; label: string; n: number }[])
+        : kind === 'movement'
+          ? (db
+              .prepare(
+                `SELECT m.slug AS subject, m.name AS label, COUNT(DISTINCT p.tmdb_id) AS n
+                 FROM movements m JOIN film_movements f ON f.movement = m.slug
+                 JOIN pool p ON p.tmdb_id = f.tmdb_id
+                 GROUP BY m.slug HAVING n >= ? ORDER BY n DESC LIMIT 30`,
+              )
+              .all(min) as { subject: string | number; label: string; n: number }[])
+          : (db
+              .prepare(
+                `SELECT t.origin_country AS subject, t.origin_country AS label,
+                        COUNT(DISTINCT p.tmdb_id) AS n
+                 FROM pool p JOIN tmdb_films t ON t.tmdb_id = p.tmdb_id
+                 WHERE t.origin_country IS NOT NULL
+                 GROUP BY t.origin_country HAVING n >= ? ORDER BY n DESC LIMIT 30`,
+              )
+              .all(min) as { subject: string | number; label: string; n: number }[]);
+
+    console.log(`
+  ${kind} campaigns with at least ${min} unseen films:
+`);
+    for (const row of rows) {
+      console.log(
+        `    ${String(row.n).padStart(4)}  ${kind}:${String(row.subject).padEnd(16)} ${row.label}`,
+      );
+    }
+    console.log('\n  Commit with:  npm run slate -- --campaign <kind>:<subject>\n');
+    db.close();
+    return;
+  }
+
+  if (process.argv.includes('--campaign-status')) {
+    const current = activeCampaign(db);
+    if (!current) {
+      console.log('\n  No campaign running. See options:  npm run slate -- --campaigns director\n');
+      db.close();
+      return;
+    }
+    loadMovements(db);
+    const queue = campaignQueue(createEngine(db), loadState(db), date, current);
+    console.log(`
+  ${current.label} (${current.kind}, ${current.ordering})`);
+    console.log(`  started ${current.startedOn} · ${queue.length} films left
+`);
+    for (const entry of queue.slice(0, 10)) {
+      console.log(`    ${entry.candidate.year ?? '????'}  ${entry.candidate.title}`);
+    }
+    console.log('');
+    db.close();
+    return;
+  }
+
+  if (process.argv.includes('--end-campaign')) {
+    const ended = endCampaign(db, 'abandoned', date);
+    console.log(ended ? `Ended the ${ended.label} campaign.` : 'No campaign was running.');
+    db.close();
+    return;
+  }
+
+  if (process.argv.includes('--campaign')) {
+    const [kind, ...rest] = arg('campaign', '').split(':');
+    const subject = rest.join(':');
+    if (!kind || !subject) {
+      console.log('Use --campaign <kind>:<subject>, e.g. --campaign director:5219');
+      db.close();
+      return;
+    }
+    const label =
+      kind === 'director'
+        ? ((db.prepare('SELECT name FROM tmdb_people WHERE person_id = ?').get(subject) as
+            | { name: string }
+            | undefined)?.name ?? subject)
+        : kind === 'movement'
+          ? ((db.prepare('SELECT name FROM movements WHERE slug = ?').get(subject) as
+              | { name: string }
+              | undefined)?.name ?? subject)
+          : subject;
+
+    const ordering = (arg('order', 'chronological') as CampaignOrdering) ?? 'chronological';
+    const started = startCampaign(
+      db,
+      { kind: kind as CampaignKind, subject, label, ordering },
+      date,
+    );
+    console.log(
+      `
+  Committed to ${started.label} (${started.ordering}).` +
+        `
+  Starts with the next slate; today's five, if drawn, stay as they are.
+`,
+    );
+    db.close();
+    return;
+  }
 
   if (process.argv.includes('--history')) {
     const limit = Number.parseInt(arg('history', '14'), 10);

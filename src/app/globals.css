@@ -48,3 +48,24 @@ body {
   color: var(--color-paper);
   font-family: var(--font-sans);
 }
+
+/* The dim toggle, in three rules.
+   -----------------------------------------------------------------------
+   A wall of posters answers "what is there". Dimming the ones already in the
+   diary turns the same wall into "what is left", which is the question this
+   project is actually about — and it has to work on server-rendered grids and
+   fetched ones alike, so it is an attribute on the shell rather than a prop
+   threaded through every card. Hover restores the poster: dimmed is a state,
+   not a redaction, and you still need to be able to look at it. */
+.poster {
+  transition: filter 150ms ease;
+}
+
+[data-dim-seen='on'] [data-seen='true'] .poster {
+  filter: brightness(0.32) saturate(0.55);
+}
+
+[data-dim-seen='on'] [data-seen='true']:hover .poster,
+[data-dim-seen='on'] [data-seen='true']:focus-within .poster {
+  filter: none;
+}

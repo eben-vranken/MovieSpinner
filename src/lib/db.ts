@@ -19,7 +19,8 @@ export function db(): Db {
   return globalForDb.moviespinnerDb;
 }
 
-export const posterUrl = (path: string | null, size = 'w500'): string | null =>
-  path ? `https://image.tmdb.org/t/p/${size}${path}` : null;
+// Re-exported so server components can keep reaching for it here. The
+// implementation moved to a database-free module the client bundle can import.
+export { posterUrl } from './poster';
 
 export const today = (): string => new Date().toISOString().slice(0, 10);

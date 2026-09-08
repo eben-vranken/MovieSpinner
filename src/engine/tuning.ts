@@ -52,6 +52,14 @@ export interface Tuning {
    */
   slateSize: number;
   /**
+   * Campaign mode.
+   *
+   * `minFilms` is the floor for offering a subject as a campaign at all. Three
+   * films is a double bill with a spare, not a deep dive, and a list of every
+   * director with two unseen films would bury the ones worth committing to.
+   */
+  campaign: { minFilms: number };
+  /**
    * How much a film's provenance is worth. The first simulated year served up
    * "Dead Mine" and "Temple of the White Elephant", both of which were in the
    * pool only because a discover query needed to fill out a country. The gap
@@ -111,6 +119,7 @@ export const DEFAULT_TUNING: Tuning = {
   skip: { days: 90, factor: 0.2 },
   junkValveWeekday: 0,
   slateSize: 5,
+  campaign: { minFilms: 4 },
   // Canon and the deliberate regional seeding rank highest: those are the two
   // sources that make a specific argument about a specific film for the reasons
   // this project exists. Collection and lineage sit in the middle, and lineage

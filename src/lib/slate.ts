@@ -2,6 +2,7 @@ import { tmdbConfig } from '../config';
 import { loadMovements } from '../coverage';
 import { createEngine, loadState } from '../engine';
 import { loadLineage } from '../engine/lineage';
+import { activeCampaign, drawCampaignSlate, endCampaign } from '../engine/campaign';
 import { drawSlate, persistSlate } from '../engine/slate';
 import { db, today } from './db';
 
@@ -52,6 +53,8 @@ export interface SlateView {
   /** The chosen film has fallen out of the pool, so re-choosing is allowed. */
   chosenIsStale: boolean;
   streak: number;
+  /** Set when today's five came from a campaign queue rather than a draw. */
+  campaignId: number | null;
 }
 
 interface SlateRow {
@@ -78,11 +81,12 @@ interface SlateRow {
   kinds: string | null;
   times_passed: number;
   manual: number;
+  campaign_id: number | null;
 }
 
 const SELECT_SLATE = `
   SELECT s.position, s.tmdb_id, s.kind, s.share, s.pool_size, s.reason_json,
-         s.lineage_from, s.lineage_rationale, s.manual,
+         s.lineage_from, s.lineage_rationale, s.manual, s.campaign_id,
          t.title, t.year, t.runtime, t.overview, t.poster_path, t.backdrop_path,
          t.origin_country, t.original_language, t.vote_average, t.vote_count,
          EXISTS (SELECT 1 FROM pool p WHERE p.tmdb_id = s.tmdb_id) AS in_pool,
@@ -116,7 +120,29 @@ export function ensureSlate(date: string = today()): SlateView {
     if (engine.candidates.length === 0) {
       throw new Error('The candidate pool is empty. Run `npm run pool` first.');
     }
-    persistSlate(handle, drawSlate(engine, loadState(handle), date));
+
+    const state = loadState(handle);
+    const campaign = activeCampaign(handle);
+
+    // A campaign only ever shapes a slate that does not exist yet. This is the
+    // whole reason it is safe: if starting one could reshape today's five, then
+    // "start a campaign, look, abandon it" would be a reroll with extra steps.
+    // Today's slate, once drawn, belongs to today.
+    let result;
+    if (campaign) {
+      try {
+        result = drawCampaignSlate(engine, state, date, campaign);
+      } catch {
+        // The subject ran dry. The campaign is finished rather than broken, so
+        // it is closed and the day falls back to an ordinary weighted draw.
+        endCampaign(handle, 'completed', date);
+        result = drawSlate(engine, state, date);
+      }
+    } else {
+      result = drawSlate(engine, state, date);
+    }
+
+    persistSlate(handle, result);
     rows = handle.prepare(SELECT_SLATE).all(date) as SlateRow[];
   }
 
@@ -221,6 +247,7 @@ export function ensureSlate(date: string = today()): SlateView {
       ? films.find((film) => film.tmdbId === pick.tmdb_id)?.inPool === false
       : false,
     streak: currentStreak(),
+    campaignId: rows[0]?.campaign_id ?? null,
   };
 }
 

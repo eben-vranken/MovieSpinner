@@ -55,7 +55,12 @@ export interface Analytics {
   };
   decades: { key: string; watched: number; then: number; pool: number }[];
   decadeSkew: Against[];
-  countries: { code: string; name: string; count: number }[];
+  /**
+   * Every country either set touches, watched count beside pool count. The
+   * pool column is what makes the map clickable everywhere it has something to
+   * say: a country you have seen nothing from is exactly the one worth opening.
+   */
+  countries: { code: string; name: string; count: number; pool: number }[];
   regions: {
     label: string;
     watched: number;
@@ -556,11 +561,14 @@ export function loadAnalytics(): Analytics {
     },
     decades,
     decadeSkew,
-    countries: coverage.country.map((bucket) => ({
-      code: bucket.key,
-      name: countryName(bucket.key),
-      count: bucket.count,
-    })),
+    countries: [...new Set([...watchedByCountry.keys(), ...poolByCountry.keys()])]
+      .map((code) => ({
+        code,
+        name: countryName(code),
+        count: watchedByCountry.get(code) ?? 0,
+        pool: poolByCountry.get(code) ?? 0,
+      }))
+      .sort((a, b) => b.count - a.count || b.pool - a.pool || a.name.localeCompare(b.name)),
     regions,
     regionByDecade,
     movements,
