@@ -45,8 +45,19 @@ export interface ListReport {
   unresolved: number;
 }
 
+/** A source that could not be fetched, and what was done about it. */
+export interface SourceFailure {
+  slug: string;
+  name: string;
+  error: string;
+  /** Entries kept from a previous build, so the list is stale rather than gone. */
+  keptFromLastBuild: number;
+}
+
 export interface PoolResult {
   lists: ListReport[];
+  /** Empty on a healthy build. Never thrown away silently. */
+  failures: SourceFailure[];
   shaped: ShapeResult;
   poolSize: number;
   distinctFromLists: number;
@@ -197,14 +208,52 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
   const client = new TmdbClient({ refresh: options.refresh, concurrency: 10 });
   const stage = options.onStage ?? (() => {});
   const lists: ListReport[] = [];
+  const failures: SourceFailure[] = [];
+
+  /**
+   * Runs one scraped source, and survives it being unreachable.
+   *
+   * Both canon sources are someone else's website and both can be down, or in
+   * Criterion's case up but refusing at random. Entries written by an earlier
+   * build stay in `pool_list_entries`, so a failure degrades that list to
+   * stale rather than deleting it; on a first run there is nothing to keep and
+   * the pool is built without it. Either way the failure is returned, never
+   * swallowed.
+   */
+  const fromSource = async (
+    slug: string,
+    name: string,
+    run: () => Promise<ListReport>,
+  ): Promise<void> => {
+    try {
+      lists.push(await run());
+    } catch (cause) {
+      const kept = (
+        db.prepare('SELECT COUNT(*) AS n FROM pool_list_entries WHERE list_slug = ?').get(slug) as {
+          n: number;
+        }
+      ).n;
+      failures.push({
+        slug,
+        name,
+        error: cause instanceof Error ? cause.message : String(cause),
+        keptFromLastBuild: kept,
+      });
+      stage(
+        kept > 0
+          ? `${name} unreachable, keeping ${kept} entries from the last build`
+          : `${name} unreachable, building without it`,
+      );
+    }
+  };
 
   // --- canon: TSPDT ---------------------------------------------------------
   stage('fetching TSPDT 1000');
-  const tspdt = await fetchTspdt(options.refresh);
-  stage(`resolving ${tspdt.length} TSPDT entries by IMDb id`);
-  const tspdtResolved = await resolveEntries(client, tspdt);
-  lists.push(
-    writeList(
+  await fromSource('tspdt-1000', 'TSPDT 1000', async () => {
+    const tspdt = await fetchTspdt(options.refresh);
+    stage(`resolving ${tspdt.length} TSPDT entries by IMDb id`);
+    const tspdtResolved = await resolveEntries(client, tspdt);
+    return writeList(
       db,
       {
         slug: 'tspdt-1000',
@@ -216,16 +265,24 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
       tspdtResolved.resolved,
       tspdtResolved.unresolved,
       tspdt.length,
-    ),
-  );
+    );
+  });
 
   // --- collection: Criterion ------------------------------------------------
+  // The one that actually needed this: criterion.com answers 403 to roughly
+  // half of identical requests. A pool of TSPDT plus the regional and auteur
+  // lists is still a perfectly good pool, so losing a third of the candidates
+  // is worth reporting loudly -- and losing the whole build over one website
+  // having a bad afternoon is not worth anything at all.
   stage('fetching the Criterion Collection');
-  const criterion = await fetchCriterion(options.refresh);
-  stage(`resolving ${criterion.length} Criterion entries by title`);
-  const criterionResolved = await resolveEntries(client, criterion);
-  lists.push(
-    writeList(
+  await fromSource('criterion', 'The Criterion Collection', async () => {
+    const criterion = await fetchCriterion(options.refresh, {
+      onRetry: (attempt, attempts) =>
+        stage(`Criterion refused the request, retrying (${attempt} of ${attempts})`),
+    });
+    stage(`resolving ${criterion.length} Criterion entries by title`);
+    const criterionResolved = await resolveEntries(client, criterion);
+    return writeList(
       db,
       {
         slug: 'criterion',
@@ -237,8 +294,8 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
       criterionResolved.resolved,
       criterionResolved.unresolved,
       criterion.filter((entry) => !entry.isSet).length,
-    ),
-  );
+    );
+  });
 
   // --- regional -------------------------------------------------------------
   const regions = readRegions();
@@ -478,6 +535,7 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
 
   return {
     lists,
+    failures,
     shaped,
     ...result,
     requests: client.stats.requests,

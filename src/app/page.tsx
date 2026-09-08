@@ -4,6 +4,7 @@ import { WorldMap } from './_charts/WorldMap';
 import { LineagePanel } from './_lineage/LineagePanel';
 import { Setup } from './_setup/Setup';
 import { ImportPanel } from './_setup/ImportPanel';
+import { DangerZone } from './_setup/DangerZone';
 import { Slate } from './_slate/Slate';
 import { loadAnalytics } from '../lib/analytics';
 import { ensureSlate } from '../lib/slate';
@@ -621,6 +622,11 @@ export default async function Page() {
           {status.lastImport?.importedAt.slice(0, 10) ?? 'at some point'}. The daily sync reads the
           RSS feed; a full export refresh is the only way to update the coverage numbers.
         </p>
+        {/* Last thing on the page, and the only one that deletes something an
+            export cannot rebuild. */}
+        <div className="mt-8">
+          <DangerZone watched={status.watched} />
+        </div>
       </footer>
     </div>
   );

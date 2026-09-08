@@ -50,6 +50,23 @@ async function main(): Promise<void> {
     console.log(`\nBuilt in ${((Date.now() - started) / 1000).toFixed(0)}s. ` +
       `${result.requests} TMDB request(s), ${result.cacheHits} cache hit(s).\n`);
 
+    // Printed before the list breakdown rather than after, because a pool built
+    // without Criterion is a different object from a pool built with it, and
+    // that should be the first thing read rather than a footnote.
+    if (result.failures.length > 0) {
+      console.log('Sources that could not be fetched:');
+      for (const failure of result.failures) {
+        console.log(`  WARN  ${failure.name}`);
+        console.log(`        ${failure.error}`);
+        console.log(
+          failure.keptFromLastBuild > 0
+            ? `        Kept ${failure.keptFromLastBuild} entries from the last build, so this list is stale.`
+            : '        Nothing from a previous build, so the pool has none of it.',
+        );
+      }
+      console.log('  Re-run npm run pool to try again; the other sources are cached.\n');
+    }
+
     console.log('Source lists:');
     for (const kind of ['canon', 'collection', 'lineage', 'regional', 'auteur']) {
       const group = result.lists.filter((l) => l.kind === kind);

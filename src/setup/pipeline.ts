@@ -211,11 +211,22 @@ export async function runPipeline(db: Db, zipPath: string): Promise<SetupRun> {
     loadLineage(db);
     const pool = await buildPool(db, { region, onStage: (message) => update({ detail: message }) });
 
+    // A source that could not be fetched does not fail the run -- the pool is
+    // usable without any single list -- but it must not vanish either, so it
+    // rides along in the detail line the page shows when it finishes.
+    const degraded = pool.failures
+      .map((failure) =>
+        failure.keptFromLastBuild > 0
+          ? `${failure.name} was unreachable, kept ${failure.keptFromLastBuild} entries from the last build`
+          : `${failure.name} was unreachable, so the pool was built without it`,
+      )
+      .join('; ');
+
     update({
       stage: 'ready',
       status: 'done',
       finished_at: new Date().toISOString(),
-      detail: `${pool.poolSize} candidate films`,
+      detail: `${pool.poolSize} candidate films${degraded ? ` — ${degraded}` : ''}`,
       done: pool.poolSize,
       total: pool.poolSize,
     });

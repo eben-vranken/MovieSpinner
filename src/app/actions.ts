@@ -8,6 +8,7 @@ import { rechooseStalePick } from '../engine/redraw';
 import { rewriteLineageFile } from '../engine/lineage-write';
 import { db } from '../lib/db';
 import { isRunning, runPipeline, saveUpload } from '../setup/pipeline';
+import { resetEverything } from '../setup/reset';
 
 /**
  * Everything the page can do to a day.
@@ -122,6 +123,47 @@ export async function importExportFile(formData: FormData): Promise<UploadResult
 
   revalidatePath('/');
   return { ok: true };
+}
+
+export type ResetResponse =
+  | { ok: true; rows: number; tables: number; backup: string | null; filesDeleted: string[] }
+  | { ok: false; error: string };
+
+/**
+ * Wipes the install back to a fresh clone.
+ *
+ * Exists so the first-run experience can be checked without a second machine.
+ * It really does delete everything, the pick log included, so it takes a typed
+ * confirmation rather than a click -- not as ceremony, but because it sits on
+ * the same page as five buttons that are also irreversible and much smaller.
+ *
+ * A backup is written first, without asking. It is a few megabytes and it turns
+ * an unrecoverable mistake into a file copy.
+ */
+export async function resetInstall(
+  confirmation: string,
+  options: { clearCaches?: boolean; clearExports?: boolean } = {},
+): Promise<ResetResponse> {
+  if (confirmation.trim().toUpperCase() !== 'RESET') {
+    return { ok: false, error: 'Type RESET to confirm.' };
+  }
+  if (isRunning(db())) {
+    return { ok: false, error: 'An import is running. Let it finish before resetting.' };
+  }
+
+  try {
+    const result = await resetEverything(db(), options);
+    revalidatePath('/');
+    return {
+      ok: true,
+      rows: result.rows,
+      tables: result.tables,
+      backup: result.backup,
+      filesDeleted: result.filesDeleted,
+    };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : 'Reset failed.' };
+  }
 }
 
 export async function addLineageEdge(formData: FormData): Promise<void> {

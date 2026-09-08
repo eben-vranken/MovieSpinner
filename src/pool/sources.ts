@@ -36,19 +36,93 @@ export interface RegionConfig {
   note: string | null;
 }
 
-async function fetchCached(url: string, file: string, refresh: boolean): Promise<string> {
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+export interface FetchOptions {
+  /** How many times to try before giving up. */
+  attempts?: number;
+  /** Called before each retry, so a long wait can say what it is doing. */
+  onRetry?: (attempt: number, attempts: number, problem: string) => void;
+}
+
+/**
+ * Fetch a source page, with the response kept on disk.
+ *
+ * Retries hard, because criterion.com does not fail cleanly. Measured, from
+ * this machine, ten identical requests each:
+ *
+ *   curl          200 200 200 403 200 200 200 200 200 200   (90%)
+ *   node fetch    403 403 403 403 403 403 403 403 403 200   (10%)
+ *
+ * Same URL, same user-agent, same accept headers, seconds apart. The thing
+ * being rejected is not the request, it is the client: their WAF fingerprints
+ * the TLS handshake, and Node's looks like a bot to it while curl's does not.
+ * That is not something a header can fix, and it is not worth impersonating a
+ * browser over -- this is a public catalogue page, fetched once, for personal
+ * use.
+ *
+ * So the answer is patience. At a 10% success rate, 25 attempts gets through
+ * about 93% of the time, and the result is cached to disk permanently, so the
+ * cost is paid once per install rather than once per build. The backoff is
+ * capped low because the failures are instant and random rather than a server
+ * asking to be left alone.
+ *
+ * A suspiciously small body counts as a failure too: a challenge page is a 200
+ * with nothing in it, and caching that would poison the cache until somebody
+ * thought to pass --refresh.
+ */
+async function fetchCached(
+  url: string,
+  file: string,
+  refresh: boolean,
+  options: FetchOptions = {},
+): Promise<string> {
   const cacheFile = path.join(CACHE_DIR, file);
   if (!refresh && fs.existsSync(cacheFile)) return fs.readFileSync(cacheFile, 'utf8');
 
   fs.mkdirSync(CACHE_DIR, { recursive: true });
-  const response = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (MovieSpinner, personal use)' },
-    redirect: 'follow',
-  });
-  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-  const body = await response.text();
-  fs.writeFileSync(cacheFile, body);
-  return body;
+
+  const attempts = options.attempts ?? 6;
+  let lastProblem = '';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (MovieSpinner, personal use)',
+          // Sent because the pages are HTML and some edges reject a request
+          // that does not say what it wants. Cheap, and it removes one
+          // variable from an already flaky endpoint.
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'accept-language': 'en-US,en;q=0.9',
+        },
+        redirect: 'follow',
+      });
+
+      if (response.ok) {
+        const body = await response.text();
+        if (body.length < 1000) {
+          lastProblem = `${url} returned ${body.length} bytes, which is not the page`;
+        } else {
+          fs.writeFileSync(cacheFile, body);
+          return body;
+        }
+      } else {
+        lastProblem = `${url} returned ${response.status}`;
+      }
+    } catch (cause) {
+      lastProblem = `${url}: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+
+    if (attempt < attempts) {
+      options.onRetry?.(attempt, attempts, lastProblem);
+      // Backoff with jitter, capped: the rejections are instant and random, so
+      // doubling forever would just make the wait long without making the next
+      // roll any likelier.
+      await sleep(Math.min(2500, 300 * 2 ** (attempt - 1)) + Math.random() * 400);
+    }
+  }
+
+  throw new Error(`${lastProblem} (after ${attempts} attempts)`);
 }
 
 const stripTags = (html: string): string =>
@@ -93,9 +167,21 @@ export async function fetchTspdt(refresh = false): Promise<SourceEntry[]> {
 
 export const CRITERION_URL = 'https://www.criterion.com/shop/browse/list?sort=spine_number';
 
-/** The Criterion Collection, ordered by spine number. No external ids on offer. */
-export async function fetchCriterion(refresh = false): Promise<SourceEntry[]> {
-  const html = await fetchCached(CRITERION_URL, 'criterion.html', refresh);
+/**
+ * The Criterion Collection, ordered by spine number. No external ids on offer.
+ *
+ * Gets far more attempts than the default because of the fingerprinting
+ * described on `fetchCached`: one request in ten gets through, so one request
+ * is not a fetch, it is a coin toss with a weighted coin.
+ */
+export async function fetchCriterion(
+  refresh = false,
+  options: FetchOptions = {},
+): Promise<SourceEntry[]> {
+  const html = await fetchCached(CRITERION_URL, 'criterion.html', refresh, {
+    attempts: 25,
+    ...options,
+  });
   const rows = html.match(/<tr class="gridFilm"[\s\S]*?<\/tr>/g) ?? [];
 
   return rows.flatMap((row) => {

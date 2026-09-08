@@ -38,6 +38,9 @@ you close and never whether you close one.
 - `src/setup/pipeline.ts` runs import → enrich → coverage → pool as one job,
   writing progress to `setup_runs`. The page's upload box and `npm run setup`
   both call it.
+- `src/setup/reset.ts` empties every table back to a fresh clone, for checking
+  the first-run experience. The footer's danger zone and `npm run reset` both
+  call it.
 - `data/*.csv` are hand-curated and committed: overrides, movements, regions, lineage.
 
 ## Rules that matter
@@ -75,6 +78,13 @@ you close and never whether you close one.
   `globals.css`, validated against the panel surface. Every chart carries a
   table twin, and two or more series always carry a legend. No charting
   library: these are rectangles and paths, rendered on the server.
+- **A dead source degrades the pool, it does not fail the build.** Both scraped
+  canon sources go through `fromSource` in `src/pool/index.ts`: on failure the
+  previous build's entries stay in `pool_list_entries` and the failure is
+  returned in `PoolResult.failures`, never swallowed. criterion.com in
+  particular rejects Node's TLS fingerprint about 90% of the time at random, so
+  `fetchCriterion` retries 25 times. Do not "fix" that by impersonating a
+  browser.
 - **Unmatched rows go to `ingest_issues` or `pool_unresolved` with a reason.**
 - **The auteur pool lists are shaped, not trusted.** `src/pool/shape.ts` caps
   them at 10 films per director, drops entries under 10 votes or 45 minutes or
@@ -82,6 +92,13 @@ you close and never whether you close one.
   falls under 15 or a seeded region under 25. Canon, Criterion, regional and
   lineage entries are exempt from all of it. Every drop is logged in
   `pool_dropped`; every rescue in `pool_cap_overrides`.
+- **Reset empties rows, never the file, and always backs up first.** The db
+  handle is a singleton on `globalThis`; deleting the file under it leaves every
+  later query pointed at nothing. `schema_migrations` is the one table kept, or
+  the next boot re-runs every migration against a schema that already exists.
+  `VACUUM` alone does not shrink the file in WAL mode -- the checkpoint after it
+  is what does. The backup into `data/backups/` is not optional and not a
+  prompt: it is what makes a one-click wipe recoverable.
 - **This has to work on an empty database.** The database is gitignored, so
   anyone who clones this starts with nothing and no TMDB token. `appStatus()` in
   `src/lib/status.ts` is the only thing the page may call before checking

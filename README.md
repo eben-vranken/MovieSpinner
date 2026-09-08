@@ -27,6 +27,11 @@ npm run setup                    # newest letterboxd-*.zip in ./data
 npm run setup -- path/to.zip     # or a specific export
 ```
 
+To see what all of that looks like from scratch, there is a reset at the bottom
+of the page and a `npm run reset` to match. It empties the database back to a
+fresh clone, taking a full backup into `data/backups/` first, so it is a wipe
+you can walk back with `npm run reset -- --restore <name>`.
+
 Either way it runs four steps: read the export, match every film against TMDB,
 count your coverage, and build the candidate pool. The two TMDB steps are the
 slow ones — a few minutes on a first run, much less afterwards, because every
@@ -35,6 +40,14 @@ response is cached on disk.
 Nothing is shared and there are no accounts. Everything lives in one SQLite
 file at `data/moviespinner.db`; delete it to start over.
 
+**If the pool step complains about Criterion.** criterion.com fingerprints the
+client and turns Node away about nine times in ten, at random, whatever headers
+it sends — curl from the same machine gets through 90% of the time. The fetch
+retries 25 times, which clears it about 93% of the time, and if it still cannot
+get through the pool is built without it rather than failing: you lose roughly
+1,500 of 4,500 candidates and the run says so. Re-running `npm run pool` picks
+it up on a luckier attempt, and once fetched it is cached to disk for good.
+
 ## Running it
 
 ```
@@ -42,6 +55,7 @@ npm install
 cp .env.example .env        # then fill in your TMDB credentials
 
 npm run setup               # import + enrich + coverage + pool, in one go
+npm run reset               # empty it back to a fresh clone (backs up first)
 npm run import              # or the four steps separately: newest letterboxd-*.zip in ./data
 npm run enrich              # match everything to TMDB, cache the metadata
 npm run matches             # anything TMDB matching could not settle

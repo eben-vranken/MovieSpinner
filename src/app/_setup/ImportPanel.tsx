@@ -104,6 +104,11 @@ export function ImportPanel({
   const formRef = useRef<HTMLFormElement>(null);
 
   const running = run?.status === 'running';
+  // A failed run that has since been resolved -- by re-running a step in a
+  // terminal, say -- is history, not a problem. If the app is ready, the
+  // failure has been dealt with by definition, so it stops being a banner.
+  // On the setup screen, where nothing is ready, it still very much is one.
+  const showFailure = run?.status === 'failed' && status.readiness !== 'ready';
 
   useEffect(() => {
     if (!running) return;
@@ -186,10 +191,10 @@ export function ImportPanel({
         </p>
       ) : null}
 
-      {run && (running || run.status === 'failed') ? (
+      {run && (running || showFailure) ? (
         <div className="mt-4 rounded border border-edge bg-ink/40 p-4">
           <Progress run={run} />
-          {run.status === 'failed' ? (
+          {showFailure ? (
             <div className="mt-4 border-t border-edge pt-3">
               <p className="text-sm text-under">{run.error ?? 'The import failed.'}</p>
               <p className="mt-1 text-xs text-muted">
