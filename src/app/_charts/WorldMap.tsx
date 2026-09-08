@@ -1,7 +1,7 @@
 import { geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import world from 'world-atlas/countries-110m.json' with { type: 'json' };
-import type { CountryRow } from '../../lib/dashboard';
+
 
 /**
  * §7's world map: countries by films watched.
@@ -28,6 +28,13 @@ const ALIASES: Record<string, string> = {
   GB: 'United Kingdom',
 };
 
+/** One country as the analytics loader hands it over. */
+export interface CountryRow {
+  code: string;
+  name: string;
+  count: number;
+}
+
 interface MapFeature {
   id: string;
   properties: { name: string };
@@ -42,7 +49,21 @@ const WIDTH = 900;
 const HEIGHT = 420;
 
 const projection = geoNaturalEarth1().fitSize([WIDTH, HEIGHT], collection as never);
-const toPath = geoPath(projection);
+const path = geoPath(projection);
+
+/**
+ * The map at one decimal place.
+ *
+ * geoPath emits full float precision, which is roughly 1/1000th of a pixel at
+ * this size -- invisible, and about 80KB of it. That mattered less when the map
+ * had its own route; on a single page that loads everything at once it is worth
+ * the two lines. Rounded coordinates are also served twice, once in the HTML
+ * and once in the RSC payload, so the saving counts double.
+ */
+const toPath = (entry: MapFeature): string | null => {
+  const d = path(entry as never);
+  return d === null ? null : d.replace(/\d+\.\d+/g, (value) => Number(value).toFixed(1));
+};
 
 export function WorldMap({ countries }: { countries: CountryRow[] }) {
   const byName = new Map<string, number>();
@@ -77,7 +98,7 @@ export function WorldMap({ countries }: { countries: CountryRow[] }) {
       >
         {collection.features.map((entry) => {
           const count = byName.get(entry.properties.name.toLowerCase()) ?? 0;
-          const d = toPath(entry as never);
+          const d = toPath(entry);
           if (!d) return null;
           return (
             <path

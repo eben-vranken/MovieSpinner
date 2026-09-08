@@ -20,6 +20,8 @@ export interface Candidate {
   kinds: string[];
   /** Rank in TSPDT's 1000, when it is in there. The strongest quality signal. */
   tspdtRank: number | null;
+  /** How many source lists include this film. Thin signal, but real. */
+  listCount: number;
   /** Set when a film I rated 4 or better points at this one. */
   lineage?: { fromTmdbId: number; fromTitle: string; rationale: string };
 }
@@ -107,7 +109,7 @@ export function loadTaste(db: Db, prior: number): Taste {
 export function loadCandidates(db: Db): Candidate[] {
   const films = db
     .prepare(
-      `SELECT p.tmdb_id, p.on_watchlist, p.kinds, t.title, t.year, t.runtime, t.origin_country,
+      `SELECT p.tmdb_id, p.on_watchlist, p.kinds, p.list_count, t.title, t.year, t.runtime, t.origin_country,
               t.vote_average, t.vote_count,
               (SELECT e.position FROM pool_list_entries e
                WHERE e.tmdb_id = p.tmdb_id AND e.list_slug = 'tspdt-1000') AS tspdt_rank
@@ -117,6 +119,7 @@ export function loadCandidates(db: Db): Candidate[] {
     tmdb_id: number;
     on_watchlist: number;
     kinds: string | null;
+    list_count: number;
     tspdt_rank: number | null;
     title: string;
     year: number | null;
@@ -196,6 +199,7 @@ export function loadCandidates(db: Db): Candidate[] {
       voteAverage: film.vote_average ?? 0,
       voteCount: film.vote_count ?? 0,
       kinds: (film.kinds ?? '').split(',').filter(Boolean),
+      listCount: film.list_count,
       tspdtRank: film.tspdt_rank,
       lineage: lineage.get(film.tmdb_id),
     };

@@ -12,7 +12,7 @@
     "coverage": "tsx src/cli/coverage.ts",
     "pool": "tsx src/cli/pool.ts",
     "simulate": "tsx src/cli/simulate.ts",
-    "pick": "tsx src/cli/pick.ts",
+    "slate": "tsx src/cli/slate.ts",
     "sync": "tsx src/cli/sync.ts",
     "report": "tsx src/cli/report.ts",
     "typecheck": "tsc --noEmit"

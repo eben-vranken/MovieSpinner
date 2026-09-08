@@ -1,6 +1,7 @@
 import type { Db } from '../db/client';
 import { loadMovements } from '../coverage';
-import { createEngine, draw, loadState, persistPick } from '../engine';
+import { createEngine, loadState } from '../engine';
+import { drawSlate, persistSlate } from '../engine/slate';
 import { loadLineage } from '../engine/lineage';
 import { fetchFeed } from './rss';
 import type { RssEntry } from './rss';
@@ -15,7 +16,7 @@ export interface SyncResult {
 
 /**
  * One daily run: read the feed, record what is new, close out any pending pick
- * the feed says I watched, and make sure today has a film.
+ * the feed says I watched, and make sure today has a slate to choose from.
  *
  * Deliberately does not touch coverage. The zip export is tier 1 and stays the
  * source of truth for what I have seen; this only knows about the last fifty
@@ -90,17 +91,21 @@ export async function sync(
     }
   })();
 
-  // The cron generates tomorrow's film as well as reading the feed, so the card
-  // is already waiting rather than being conjured by whoever opens the page.
+  // The cron draws the day's slate as well as reading the feed, so the five are
+  // already waiting rather than being conjured by whoever opens the page.
+  //
+  // It draws the slate and stops there. It cannot choose for you -- that is the
+  // whole point of the slate -- so a day the cron has prepared and nobody has
+  // opened has five films and no pick, which is exactly right.
   let generated: string | null = null;
   if (options.generate !== false) {
-    const exists = db.prepare('SELECT 1 AS ok FROM picks WHERE pick_date = ?').get(date);
+    const exists = db.prepare('SELECT 1 AS ok FROM slates WHERE slate_date = ?').get(date);
     if (!exists) {
       loadMovements(db);
       loadLineage(db);
       const engine = createEngine(db);
       if (engine.candidates.length > 0) {
-        persistPick(db, draw(engine, loadState(db), date));
+        persistSlate(db, drawSlate(engine, loadState(db), date));
         generated = date;
       }
     }
@@ -109,7 +114,7 @@ export async function sync(
   db.prepare(
     `INSERT INTO sync_runs (ran_at, entries, new_entries, resolved, note)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run(now, feed.length, newEntries, resolved.length, generated ? `generated ${generated}` : null);
+  ).run(now, feed.length, newEntries, resolved.length, generated ? `drew the slate for ${generated}` : null);
 
   return { entries: feed.length, newEntries, resolved, generated, unmatched: [...new Set(unmatched)] };
 }

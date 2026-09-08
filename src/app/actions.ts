@@ -1,15 +1,77 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { resolvePick } from '../engine';
+import { resolvePick, unresolvePick } from '../engine';
+import { chooseFromSlate } from '../engine/choose';
+import { lockInFilm as lockIn } from '../engine/lock';
+import { rechooseStalePick } from '../engine/redraw';
 import { rewriteLineageFile } from '../engine/lineage-write';
 import { db } from '../lib/db';
 
-/** §4: no reroll. The only two things you can do to a pick are these. */
-export async function markPick(date: string, status: 'watched' | 'skipped'): Promise<void> {
-  resolvePick(db(), date, status);
+/**
+ * Everything the page can do to a day.
+ *
+ * There are five verbs and no sixth. You choose one of the five films, you lock
+ * in a different one from the pool by hand, you mark it watched, you undo a
+ * misclick, and -- only when the pool has been rebuilt out from under a film
+ * you already chose -- you re-choose from that same day's slate.
+ *
+ * None of them can change which five films you were offered, and every one of
+ * them still ends at `persistPickRecord`, which refuses to overwrite. The
+ * override widens what you may choose; it does not let you choose twice.
+ */
+
+/** Commit to one of today's five. Final: `persistPickRecord` refuses a second. */
+export async function chooseFilm(date: string, tmdbId: number): Promise<void> {
+  chooseFromSlate(db(), date, tmdbId);
   revalidatePath('/');
-  revalidatePath('/dashboard');
+}
+
+/**
+ * The manual override: any film in the pool, locked in for today.
+ *
+ * Deliberately not restricted to the slate. The engine's job is to find the gap
+ * when you do not know it; when you do know it, insisting you wait for it to
+ * come up would be the tool getting in the way. It is still one film, still
+ * scored, still final.
+ *
+ * Returns its failure rather than throwing it. The refusals here are the useful
+ * kind -- "that is not in the pool", "today already has a pick" -- and a thrown
+ * error would be replaced by a generic message in a production build, which is
+ * the one place the wording matters. The other actions can throw because their
+ * failures are unreachable through the UI.
+ */
+export type LockResult = { ok: true; title: string } | { ok: false; error: string };
+
+export async function lockInFilm(date: string, tmdbId: number): Promise<LockResult> {
+  try {
+    const { title } = lockIn(db(), date, tmdbId);
+    revalidatePath('/');
+    return { ok: true, title };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : 'Could not lock that in.' };
+  }
+}
+
+export async function markWatched(date: string): Promise<void> {
+  resolvePick(db(), date, 'watched');
+  revalidatePath('/');
+}
+
+/** Undo a misclick. The film does not change, only the bookkeeping about it. */
+export async function undoWatched(date: string): Promise<void> {
+  unresolvePick(db(), date);
+  revalidatePath('/');
+}
+
+/**
+ * Replaces a chosen film that is no longer in the pool with another from the
+ * same slate. Refuses unless the film has genuinely fallen out, which is what
+ * keeps this from being the reroll the project does not have.
+ */
+export async function rechooseFilm(date: string, tmdbId: number): Promise<void> {
+  rechooseStalePick(db(), date, tmdbId);
+  revalidatePath('/');
 }
 
 export async function addLineageEdge(formData: FormData): Promise<void> {
@@ -33,13 +95,17 @@ export async function addLineageEdge(formData: FormData): Promise<void> {
     )
     .run(from, to, title(from), title(to), rationale);
 
+  // The CSV stays the source of truth, so an edge added here is written back
+  // out immediately rather than living only in the database.
   rewriteLineageFile(handle);
-  revalidatePath('/lineage');
+  revalidatePath('/');
 }
 
 export async function deleteLineageEdge(from: number, to: number): Promise<void> {
   const handle = db();
-  handle.prepare('DELETE FROM lineage_edges WHERE from_tmdb_id = ? AND to_tmdb_id = ?').run(from, to);
+  handle
+    .prepare('DELETE FROM lineage_edges WHERE from_tmdb_id = ? AND to_tmdb_id = ?')
+    .run(from, to);
   rewriteLineageFile(handle);
-  revalidatePath('/lineage');
+  revalidatePath('/');
 }

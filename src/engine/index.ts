@@ -54,16 +54,28 @@ export interface Reason {
  */
 export function statureOf(candidate: Candidate, tuning: Tuning): number {
   const { stature } = tuning;
-  if (candidate.tspdtRank !== null) {
-    const position = Math.min(1, Math.max(0, (candidate.tspdtRank - 1) / 999));
-    return stature.tspdtBest + (stature.tspdtWorst - stature.tspdtBest) * position;
-  }
-  const kinds = new Set(candidate.kinds);
-  if (candidate.lineage || kinds.has('lineage')) return stature.lineage;
-  if (kinds.has('collection')) return stature.collection;
-  if (kinds.has('canon')) return stature.tspdtWorst;
-  if (kinds.has('auteur')) return stature.auteur;
-  return stature.regional;
+  const byKind: Record<string, number> = {
+    canon: stature.tspdtWorst,
+    regional: stature.regional,
+    collection: stature.collection,
+    lineage: stature.lineage,
+    auteur: stature.auteur,
+  };
+
+  // A film's best claim wins. Being both a TSPDT entry and the fortieth
+  // most-voted Indonesian film should be scored as the former.
+  let best =
+    candidate.tspdtRank !== null
+      ? stature.tspdtBest +
+        (stature.tspdtWorst - stature.tspdtBest) *
+          Math.min(1, Math.max(0, (candidate.tspdtRank - 1) / 999))
+      : 0;
+  for (const kind of candidate.kinds) best = Math.max(best, byKind[kind] ?? 0);
+  if (candidate.lineage) best = Math.max(best, stature.lineage);
+  if (best === 0) best = stature.auteur;
+
+  // Agreement across lists is a small, honest bonus on top.
+  return best * (1 + tuning.listCountBonus * Math.max(0, candidate.listCount - 1));
 }
 
 export interface Scored {
@@ -386,15 +398,34 @@ export const isJunkValveDay = (date: string, tuning: Tuning): boolean =>
  * changed watched set would silently produce a different film and quietly break
  * the no-reroll rule.
  */
-export function draw(engine: Engine, state: EngineState, date: string): DrawResult {
+/**
+ * Every still-available candidate, scored for one date.
+ *
+ * Split out of `draw` so the slate can score the pool exactly the way a single
+ * pick does. A slate that scored films differently from the one-a-day draw
+ * would quietly be a second engine, and the whole point of §10 is that there is
+ * one readable set of rules.
+ */
+export function scoreAll(
+  engine: Engine,
+  state: EngineState,
+  date: string,
+): { kind: PickKind; scored: Scored[] } {
   const kind: PickKind = isJunkValveDay(date, engine.tuning) ? 'junk-valve' : 'blind-spot';
   const available = engine.candidates.filter((candidate) => !state.taken.has(candidate.tmdbId));
 
-  const scored = available.map((candidate) =>
-    kind === 'junk-valve'
-      ? scoreJunkValve(candidate, state, date, engine.tuning, engine.taste)
-      : scoreBlindSpot(candidate, state, date, engine.tuning),
-  );
+  return {
+    kind,
+    scored: available.map((candidate) =>
+      kind === 'junk-valve'
+        ? scoreJunkValve(candidate, state, date, engine.tuning, engine.taste)
+        : scoreBlindSpot(candidate, state, date, engine.tuning),
+    ),
+  };
+}
+
+export function draw(engine: Engine, state: EngineState, date: string): DrawResult {
+  const { kind, scored } = scoreAll(engine, state, date);
 
   const weights = scored.map((entry) => entry.weight);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
@@ -414,10 +445,31 @@ export function draw(engine: Engine, state: EngineState, date: string): DrawResu
   };
 }
 
-/** Writes a draw down. Refuses to overwrite, because that would be a reroll. */
-export function persistPick(db: Db, result: DrawResult): void {
-  const existing = db.prepare('SELECT tmdb_id FROM picks WHERE pick_date = ?').get(result.date);
-  if (existing) throw new Error(`${result.date} already has a pick. There is no reroll.`);
+/** One row of `picks`, already flattened. `reason` is the serialised breakdown. */
+export interface PickRecord {
+  date: string;
+  tmdbId: number;
+  kind: PickKind;
+  seed: string;
+  weight: number;
+  share: number;
+  topShare: number;
+  poolSize: number;
+  reason: string;
+  lineageFrom: number | null;
+  lineageRationale: string | null;
+}
+
+/**
+ * The one door into `picks`, and the one place that refuses to overwrite.
+ *
+ * Both callers go through here on purpose: a film drawn as the day's single
+ * pick and a film chosen off the day's slate are the same commitment, and
+ * having two inserts would mean having two chances to forget the guard.
+ */
+export function persistPickRecord(db: Db, record: PickRecord): void {
+  const existing = db.prepare('SELECT tmdb_id FROM picks WHERE pick_date = ?').get(record.date);
+  if (existing) throw new Error(`${record.date} already has a pick. There is no reroll.`);
 
   db.prepare(
     `INSERT INTO picks
@@ -425,7 +477,12 @@ export function persistPick(db: Db, result: DrawResult): void {
         lineage_from, lineage_rationale, status, created_at)
      VALUES (@date, @tmdbId, @kind, @seed, @weight, @share, @topShare, @poolSize, @reason,
              @lineageFrom, @lineageRationale, 'pending', @createdAt)`,
-  ).run({
+  ).run({ ...record, createdAt: new Date().toISOString() });
+}
+
+/** Writes a draw down. Refuses to overwrite, because that would be a reroll. */
+export function persistPick(db: Db, result: DrawResult): void {
+  persistPickRecord(db, {
     date: result.date,
     tmdbId: result.chosen.candidate.tmdbId,
     kind: result.kind,
@@ -437,8 +494,41 @@ export function persistPick(db: Db, result: DrawResult): void {
     reason: JSON.stringify(result.chosen.reason),
     lineageFrom: result.chosen.candidate.lineage?.fromTmdbId ?? null,
     lineageRationale: result.chosen.candidate.lineage?.rationale ?? null,
-    createdAt: new Date().toISOString(),
   });
+}
+
+/**
+ * Whether a pick points at a film the current pool no longer contains.
+ *
+ * The only condition under which a redraw is allowed. Rebuilding the pool can
+ * strand a pick on a film that is no longer a candidate, and that is a stale
+ * record rather than a choice anyone made.
+ */
+export function isPickStale(db: Db, date: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT p.tmdb_id, EXISTS (SELECT 1 FROM pool WHERE tmdb_id = p.tmdb_id) AS in_pool
+       FROM picks p WHERE p.pick_date = ?`,
+    )
+    .get(date) as { tmdb_id: number; in_pool: number } | undefined;
+  return row !== undefined && row.in_pool === 0;
+}
+
+/**
+ * Puts a resolved pick back to pending.
+ *
+ * This is not a reroll and does not touch which film was drawn. It exists
+ * because "watched" and "skip" sit next to each other and a misclick should not
+ * need a database edit to undo.
+ */
+export function unresolvePick(db: Db, date: string): void {
+  const changed = db
+    .prepare(
+      `UPDATE picks SET status = 'pending', resolved_on = NULL
+       WHERE pick_date = ? AND status <> 'pending'`,
+    )
+    .run(date).changes;
+  if (changed === 0) throw new Error(`No resolved pick on ${date}`);
 }
 
 export function resolvePick(db: Db, date: string, status: 'watched' | 'skipped'): void {

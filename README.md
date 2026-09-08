@@ -1,11 +1,13 @@
 # MovieSpinner
 
-A daily blind-spot film picker. One film a day, locked, chosen to fill gaps in
-my film education rather than to match my taste. See the project brief for the
+A daily blind-spot film picker. Five films a day, weighted at the gaps in my
+film education rather than at my taste; I choose one and the choice is final.
+Everything that decided it is on the same page. See the project brief for the
 full design.
 
-All nine build steps are done: ingest, enrich, coverage, pool, engine, daily
-card, RSS sync, dashboard, lineage editor.
+All ten build steps are done: ingest, enrich, coverage, pool, engine, the daily
+slate, RSS sync, coverage charts, lineage editor, and folding the whole thing
+onto one page.
 
 ```
 npm install
@@ -25,8 +27,8 @@ npm run enrich              # match everything to TMDB, cache the metadata
 npm run matches             # anything TMDB matching could not settle
 npm run coverage            # decade / country / director / movement
 npm run pool                # build the candidate pool and check its supply
-npm run simulate            # a year of picks, without writing anything down
-npm run pick                # today's film, generated once and locked
+npm run simulate            # a year of slates, without writing anything down
+npm run slate               # today's five, drawn once and locked
 npm run sync                # read the Letterboxd feed, close out watched picks
 npm run report              # verification for the whole pipeline
 npm run dev                 # the app
@@ -49,10 +51,13 @@ npm run matches -- --write      # seed data/tmdb-overrides.csv with stubs
 npm run coverage -- --snapshot  # record today's numbers for the trend
 npm run pool -- --report        # print the current pool without rebuilding
 npm run pool -- --refresh       # re-scrape the canon pages and re-fetch TMDB
-npm run simulate -- --days 365 --skip-rate 0.2 --list
-npm run pick -- --watched       # mark today watched
-npm run pick -- --skip          # record a skip; it returns at reduced weight
-npm run pick -- --history 14
+npm run simulate -- --chooser findable   # the pessimistic reader. The one that matters
+npm run simulate -- --days 365 --miss-rate 0.2 --list
+npm run slate -- --choose 5801  # commit to a tmdb_id from today's five
+npm run slate -- --find solaris # search the pool by title
+npm run slate -- --lock 593     # lock any pool film in for today, on or off the slate
+npm run slate -- --watched      # mark the chosen film watched
+npm run slate -- --history 14
 ```
 
 ## Where things stand
@@ -71,7 +76,7 @@ PASS  every movement supplied           PASS  pre-1950 supply  917 films
       pool 5532 films, uncapped               against 0 watched
 PASS  every edge target in pool         PASS  no film picked twice
       104 lineage edges, 88 live              in a simulated year
-PASS  RSS sync                          PASS  all nine build steps
+PASS  RSS sync                          PASS  all ten build steps
       50 feed entries, exact TMDB ids         verified
 ```
 
@@ -93,12 +98,17 @@ PASS  RSS sync                          PASS  all nine build steps
 | `src/pool/sources.ts` | Scrapers and config readers for the pool sources |
 | `src/pool/index.ts` | Resolve, dedupe, exclude watched, materialise |
 | `src/engine/tuning.ts` | Every number the draw depends on, in one file |
-| `src/engine/index.ts` | Gap scores, cooldowns, the draw, persistence |
-| `src/engine/random.ts` | Seeded PRNG, so a date always gives the same film |
+| `src/engine/index.ts` | Gap scores, cooldowns, scoring, persistence |
+| `src/engine/slate.ts` | The five-film draw, without replacement |
+| `src/engine/choose.ts` | Turning one of the five into the day's pick |
+| `src/engine/lock.ts` | The manual override: any pool film, scored and locked in |
+| `src/engine/random.ts` | Seeded PRNG, so a date always gives the same five |
 | `src/sync/rss.ts` | Letterboxd feed reader. No auth, no API application |
-| `src/app/page.tsx` | The daily card |
-| `src/app/dashboard/` | Coverage, the world map, movements, regions |
-| `src/app/lineage/` | The edge editor, writing back to the CSV |
+| `src/app/page.tsx` | The entire UI. One route, no navigation |
+| `src/app/_slate/` | The five cards, and the film you took |
+| `src/app/_charts/` | Chart vocabulary and the world map. No library |
+| `src/app/_lineage/` | The edge editor, writing back to the CSV |
+| `src/lib/analytics.ts` | Every number the page draws, in one pass |
 | `data/tmdb-overrides.csv` | Manual match resolutions. Committed on purpose |
 | `data/movements.csv` | The hand-curated movement taxonomy |
 | `data/film-movements.csv` | Films tagged to a movement by hand |
@@ -419,33 +429,41 @@ arrives with its sentence:
             If you want to know how far horror can actually go, this is the standard.
 ```
 
-### Skips and cooldowns
-
-A skip is recorded, not undone. The film returns at 0.2 weight recovering on a
-curve over 90 days, so the fortnight after a skip stays near the floor. Over 800
-simulated days with a skip every fifth pick, 25 films came back, the shortest gap
-was 74 days and none returned inside two weeks.
+### Cooldowns
 
 Cooldowns multiply weight down hard rather than excluding: the same country or
 director inside 14 days, the same decade inside 7, each costing a factor of 0.06.
 
-## Steps 6 to 9: the app
+The skip machinery (`skipFactor`, a film returning at 0.2 weight recovering over
+90 days) is still in the engine and still applies to the resolved skips in the
+history, but nothing creates new ones. Step 10 removed the skip button: the four
+films you do not choose are not skips, they are just films you did not pick
+today, and penalising them would be punishing you for having been given a
+choice.
+
+## Steps 6 to 10: the app
 
 Next.js App Router, server components reading SQLite directly, server actions
-for the three things you can do. No client-side data fetching except the film
-search in the lineage editor, and no state management, because there is no
+for the four things you can do: choose one of five, mark it watched, undo that,
+and — only when the pool has been rebuilt under a film you already chose —
+re-choose from the same day's slate. No client-side data fetching except the
+film search in the lineage editor, and no state management, because there is no
 state: the database is the state.
 
-### The daily card (`/`)
+### The daily slate (`/`)
 
-Poster, title, year, director, country, runtime, movements, Belgian
-availability, and either the lineage sentence or a plain-language version of
-which gap the film fills. Two buttons, watched and skip, and a line of text
-saying there is no reroll.
+Five films, drawn once for the date and frozen. Each card carries poster, title,
+year, director, country, runtime, what kind of claim the pool is making about it
+(TSPDT rank, Criterion, regional, auteur), Belgian availability, the probability
+it came up at, and either its lineage sentence or a plain-language version of
+which gap it fills. Clicking one commits it.
 
-The pick is generated on first read and never again. That is safe precisely
-because `persistPick` refuses to overwrite: two tabs opening at midnight cannot
-produce two different films.
+The slate is generated on first read and never again, which is safe for exactly
+the reason the old single pick was: `persistSlate` refuses to overwrite, so two
+tabs opening at midnight cannot produce two different fives.
+
+Under the five, folded away until asked for, is the **manual override**: search
+the pool and lock any of its films in for today. See step 10.
 
 ### RSS sync (`/api/cron`, `npm run sync`)
 
@@ -467,16 +485,31 @@ already declares a 06:00 daily cron against `/api/cron`. Set `CRON_SECRET` if
 you deploy it; the route is unguarded without one, and an unguarded endpoint
 that writes to the database would be the one careless thing in this project.
 
-### Dashboard (`/dashboard`)
+### The charts (same page, below the slate)
 
-The decade grid is the hero, with the wall stated in words above it and a column
-showing what the pool has available to fix each row. Then the world map, then
-progress, then movements, then director depth, then a deliberately small block
-of streak and skip numbers.
+Everything that used to live at `/dashboard`, plus the panels the slate made
+worth having. Roughly: decade counts and decade **skew**, the world map, a
+region-by-decade matrix, regions, movements, the diary cadence, ratings,
+director depth, runtime, genre and language skew, where the pool comes from,
+whether any of it is watchable, how obscure it is, what the shaper threw out,
+and the log of every slate so far.
 
-Progress is measured against **movements and regions**, not percent of pool
-cleared. A pool percentage resets the moment the pool grows; these close and
-stay closed, and a filled cell means something concrete.
+The skew charts are the ones that earned their place. A raw count says the 2020s
+lead; skew says that once you account for what the pool actually holds, the
+2020s are +17 points over-watched and everything before 1950 is -14.5. Those are
+different claims and only the second one tells the engine anything.
+
+Progress is still measured against **movements and regions**, not percent of
+pool cleared. A pool percentage resets the moment the pool grows; these close
+and stay closed.
+
+There is no charting library. The vocabulary is six forms -- bar rows, columns,
+diverging bars, a stacked bar, a time area, a matrix -- specified at the top of
+`src/app/_charts/plots.tsx` and rendered as server-side SVG and HTML. The
+palette is CSS variables validated against the panel surface for the lightness
+band, chroma floor, protan/deutan separation and 3:1 contrast, so the categorical
+slots are assigned in a fixed order and never cycled. Every chart has a
+collapsed table twin, so no value is reachable only by hovering a mark.
 
 The map is plain server-rendered SVG over `world-atlas` with `d3-geo`. Country
 identity is matched by name, because the atlas carries numeric ISO ids and the
@@ -490,7 +523,7 @@ Every dimension is paired with where it stood at the earliest snapshot, because
 `npm run coverage -- --snapshot` monthly and the "+n" column starts meaning
 something.
 
-### Lineage editor (`/lineage`)
+### Lineage editor (same page, bottom)
 
 Add an edge by searching for an anchor you rated 4 or better, searching for a
 target in the pool, and writing the sentence. Edges are grouped by anchor and
@@ -502,6 +535,127 @@ lived in the database would vanish the next time anything called `loadLineage`.
 Editing in the app and editing the file by hand are the same operation. Verified
 by round trip: add, reload from disk, delete, reload, and the file comes back
 byte-identical.
+
+## Step 10: five films, one page
+
+Two changes, and only one of them was risky.
+
+### One page
+
+`/`, `/dashboard` and `/lineage` are now one route with no navigation. This was
+the easy half and it was overdue: the argument the dashboard makes is *why the
+film in front of you is that film*, and putting it behind a link meant it was
+never on screen at the moment it was relevant. The panels moved into
+`src/app/_charts/`, `_slate/` and `_lineage/` (underscore-prefixed, so the App
+Router does not treat them as routes) and `src/lib/analytics.ts` loads every
+number in one pass.
+
+Several panels only became worth building once everything shared a page. The
+**skew** charts are the best of them. A raw decade count says the 2020s lead;
+skew says that against what the pool actually holds, the 2020s are +17 points
+over-watched and everything before 1950 is −14.5. The second is the number the
+engine is acting on and the first was quietly hiding it. Same for genre and
+language: English is +42.6 points against the pool, which is the project
+working, not a bug.
+
+### Five films instead of one
+
+The riskier half. The old model handed over one film with a skip button; now it
+draws five and you choose one.
+
+**The rule did not move.** A day still resolves to exactly one film, choosing is
+still final, and `persistPickRecord` is still the single door into `picks` that
+refuses to overwrite. `persistSlate` refuses to redraw a slate for the same
+reason. What changed is *who* narrows five to one, not whether it happens.
+
+Sampling is without replacement from the existing scoring, which is why
+`drawSlate` cannot just call `draw` five times — the same date seed would return
+the same film every time. Each draw zeroes the film it took, so the `share`
+recorded per card is that film's probability *at the moment it came up*: position
+0 is drawn from the full distribution and position 4 from a slightly depleted
+one. That is the honest number and it is what the card shows.
+
+**The thing that could have gone wrong.** Give someone a choice of five and they
+will take the comfortable one, and the blind-spot weighting becomes decoration.
+So `npm run simulate` now models the chooser explicitly and you can run the
+pessimistic case on purpose:
+
+```
+npm run simulate -- --chooser findable   # always take the most-voted of the five
+```
+
+Over a simulated year under that chooser, coverage still closes hard: pre-1950
+goes 0 → 26, 19 movements open from zero, 32 countries are seen for the first
+time. The reason is structural rather than lucky — all five come from the same
+weighted draw, so the most-findable of five obscure films is still an obscure
+film. There is no safe option on the slate because nothing safe was drawn onto
+it. If that ever stops being true, this is the check that will say so.
+
+### The one carve-out, improved
+
+`redrawStalePick` became `rechooseStalePick`. It still only fires when a chosen
+film has genuinely fallen out of the pool after a rebuild, and still refuses
+otherwise. But it used to have to draw a fresh film from nowhere, which meant a
+stale day silently got its pick from a different mechanism than every other day.
+Now the other four films from that morning are still sitting in `slates`, so the
+repair is to re-choose from the same slate. The superseded row still goes to
+`pick_redraws`.
+
+### Migrating the old picks
+
+`012_slate.sql` treats the two kinds of existing row differently, because they
+mean different things. A **resolved** pick is a decision a person made, so it is
+preserved as a slate of one film that was chosen — the log then reads truthfully
+instead of pretending five were on offer. A **pending** pick is not a decision;
+it is what the old engine drew the instant someone opened the page, and choosing
+is precisely what moved into the reader's hands. Keeping it would pre-decide a
+day nobody had decided, so unresolved picks are dropped and that date draws a
+real slate on next read. By definition no human action is lost.
+
+### The manual override
+
+The slate answers "what should I watch tonight". It does not answer "I want to
+watch Solaris tonight", and that is a real thing to want — usually when you
+already know what the gap is and do not need the engine to find it.
+
+So there is a search box under the five. It searches the **candidate pool**, and
+that boundary is the whole design:
+
+- **It reaches the pool and no further.** You can override which blind spot you
+  close. You cannot override it into a rewatch of a comfort film, because
+  comfort films are not in the pool — they are films you have already seen, and
+  the pool is the 4,470 you have not.
+- **It is scored, not waved through.** The film goes through the same `scoreAll`
+  the slate used, on the same date against the same state, so the card still
+  says which gap it closes and what the draw would have weighted it at. A manual
+  pick is not an unexplained pick.
+- **It is still one film, still final.** `lockInFilm` ends at `chooseFromSlate`
+  and therefore at `persistPickRecord`, which refuses to overwrite. Locking in
+  twice fails exactly as clicking two cards does.
+- **It appends rather than replaces.** The locked-in film joins the day's slate
+  at position 5 with `manual = 1`, so the log still says what the engine put on
+  the table that morning. A ★ in the slate log marks it.
+
+Its own seed, `moviespinner:manual:<date>`, rather than the date seed — because
+recording the draw's seed would imply the draw produced it, and it did not. You
+did.
+
+On search: the pool has two films called Solaris, Tarkovsky's and Soderbergh's,
+so results carry year, director, country and runtime. A fast search that returns
+two identical rows called "Solaris" is useless. Ranking is exact title, then
+prefix, then vote count. The query is a 2.5–4.3ms scan of 4,470 rows, which is
+not worth an FTS table; the costs worth avoiding were the round trip (debounced
+to one per typed word, with in-flight aborts so a slow "sol" cannot land after a
+fast "solaris") and the director lookup, which is a correlated subquery in the
+projection so it runs for twelve rows rather than 4,470.
+
+### What the four you did not choose are for
+
+They stay in `slates` forever. A film the engine offers over and over that you
+never take is the most interesting thing the log records — either the weighting
+is wrong about it or you are — and deleting the losers would throw that away.
+The page surfaces it two ways: a "passed over" count on each card, and an
+"offered and passed over" panel at the bottom.
 
 ## Data shape
 
@@ -550,22 +704,32 @@ Settled:
 - **Whether the candidate pool should be capped.** It is not. Progress is
   reported against movements and regions, which close and stay closed.
 
-- **Whether a skipped film's lineage rationale is reshown.** It is. The reason a
-  film went unwatched is rarely the reason it was offered, and a fresh angle
-  would mean writing a second sentence for every edge to solve a problem nobody
-  has yet.
+- **Whether a passed-over film's lineage rationale is reshown.** It is. The
+  reason a film went unwatched is rarely the reason it was offered, and a fresh
+  angle would mean writing a second sentence for every edge to solve a problem
+  nobody has yet.
+
+- **Whether offering five undoes the blind-spot weighting.** It does not, and
+  this was the real risk of step 10. `npm run simulate -- --chooser findable`
+  models a reader who always takes the most-voted film on the slate, which is
+  the worst case; over a simulated year it still opens 19 movements and 32 new
+  countries and takes pre-1950 from 0 to 26. All five come from the same
+  weighted draw, so the easiest of five blind spots is still a blind spot.
 
 Nothing from §11 is still open. One thing worth deciding later: availability in
-Belgium is shown on the card but does not affect weighting, which is what §4 and
-§7 describe. It does mean some picks cannot be watched the day they arrive, and
-skip is the intended answer.
+Belgium is shown on each card but does not affect weighting, which is what §4
+and §7 describe. With five on offer it matters less than it did — you can simply
+take one of the others — but it does mean a slate can arrive where nothing is
+reachable tonight.
 
 ## Stack
 
 Node + TypeScript throughout. SQLite via `better-sqlite3`, `csv-parse` and
 `adm-zip` for ingest, `d3-geo` plus `world-atlas` for the map, Next.js and
 Tailwind for the UI. No HTTP client dependency; Node's `fetch` is enough, and no
-charting library, because everything here is a table or one SVG projection.
+charting library: the whole chart vocabulary is about 400 lines of server-side
+SVG and HTML in `src/app/_charts/plots.tsx`, which is less than the smallest
+plotting library would have cost in bundle alone.
 
 The pipeline is CLI-first and the UI reads the same database, which is why every
 step could be verified before any of it was rendered.

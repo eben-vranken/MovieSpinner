@@ -5,9 +5,10 @@ soviet-montage,Soviet Montage,1924,1935,Soviet Union,"Eisenstein, Vertov, Pudovk
 french-impressionism,French Impressionism,1918,1930,France,"Gance, Epstein, Dulac. Silent avant-garde.",40,directors,
 surrealism,Surrealism,1928,1990,Europe,Bunuel and Dali through to Svankmajer and Borowczyk.,50,directors,
 pre-code-hollywood,Pre-Code Hollywood,1930,1934,United States,Before the Production Code was enforced.,60,period,US
-classical-hollywood,Classical Hollywood,1930,1948,United States,The studio system at full power.,70,period,US
+classical-hollywood,Classical Hollywood,1930,1960,United States,"The studio system at full power, through to the end of the Code era.",70,period,US
 screwball-comedy,Screwball comedy,1934,1942,United States,"Hawks, Capra, Sturges, Cukor.",80,directors,
 hollywood-musical,Hollywood musical,1929,1960,United States,"Berkeley, the Freed Unit, Donen and Kelly.",90,directors,
+poetic-realism,French poetic realism,1934,1945,France,"Renoir, Carne, Vigo. The tradition the New Wave defined itself against.",95,directors,
 film-noir,Film noir,1940,1958,United States,"The classical noir cycle, not neo-noir.",100,directors,
 prewar-japanese,Prewar and wartime Japanese,1930,1945,Japan,"Ozu, Mizoguchi, Naruse before 1945. Zero films watched.",110,period,JP
 italian-neorealism,Italian Neorealism,1943,1952,Italy,"Rossellini, De Sica, Visconti. Zero films watched.",120,directors,
@@ -16,6 +17,7 @@ mexican-golden-age,Mexican Golden Age,1936,1959,Mexico,"Fernandez, Figueroa, and
 soviet-thaw,Soviet Thaw,1956,1968,Soviet Union,"Kalatozov, Chukhray, Tarkovsky's first features.",150,directors,
 french-new-wave,French New Wave,1958,1968,France,"Godard, Truffaut, Rohmer, Chabrol, plus the Left Bank.",160,directors,
 british-new-wave,British New Wave,1959,1965,United Kingdom,"Kitchen sink realism. Richardson, Reisz, Anderson.",170,directors,
+british-classical,British classical,1935,1965,United Kingdom,"Powell and Pressburger, Lean, Reed, the Ealing comedies.",175,directors,
 polish-film-school,Polish Film School,1955,1963,Poland,"Wajda, Munk, early Polanski.",180,directors,
 italian-modernism,Postwar Italian modernism,1958,1976,Italy,"Antonioni, Fellini, Pasolini, late Visconti.",190,directors,
 japanese-new-wave,Japanese New Wave,1959,1976,Japan,"Oshima, Imamura, Suzuki, Teshigahara.",200,directors,
@@ -39,5 +41,6 @@ cinema-du-look,Cinema du look,1981,1995,France,"Besson, Beineix, Carax.",370,dir
 dogme-95,Dogme 95,1995,2005,Denmark,"Von Trier, Vinterberg. Zero films watched.",380,directors,
 banlieue-cinema,Banlieue cinema,1995,2025,France,"Kassovitz, Ly, Diop.",390,directors,
 korean-new-wave,Korean New Wave,1996,2025,South Korea,"Bong, Park, Lee Chang-dong, Kim Jee-woon, Na Hong-jin.",400,directors,
+slow-cinema,Slow cinema,1975,2025,Global,"Tarr, Akerman, Apichatpong, Tsai. Duration as the subject.",405,directors,
 new-french-extremity,New French Extremity,1998,2012,France,"Noe, Denis, Aja, Laugier. Zero films watched.",410,directors,
 romanian-new-wave,Romanian New Wave,2005,2018,Romania,"Mungiu, Puiu, Porumboiu. Zero films watched.",420,directors,

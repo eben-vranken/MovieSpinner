@@ -7,6 +7,35 @@
   --color-paper: #e8e6e1;
   --color-muted: #8b8b94;
   --color-accent: #d8a657;
+
+  /* Chart palette.
+     Categorical: the first five slots of a hue order validated against this
+     page's panel surface (#16161a) for the OKLCH lightness band, the chroma
+     floor, protan/deutan separation and 3:1 contrast. The order is the
+     colourblind-safety mechanism, not a preference, so slots are assigned in
+     sequence and never cycled. Past five series a chart folds its tail into
+     "other" or becomes small multiples. */
+  --color-viz-1: #3987e5;
+  --color-viz-2: #d95926;
+  --color-viz-3: #199e70;
+  --color-viz-4: #c98500;
+  --color-viz-5: #d55181;
+
+  /* Sequential: one hue, light to dark, landing on the project accent at step
+     4. The darkest step still clears 2:1 against the panel, so a filled cell
+     never disappears into its own background. */
+  --color-gold-1: #6b5426;
+  --color-gold-2: #8f7231;
+  --color-gold-3: #b4913e;
+  --color-gold-4: #d8a657;
+  --color-gold-5: #f0cd8f;
+
+  /* Diverging: warm against cool, with a grey midpoint that reads as nothing.
+     Used only where a value genuinely has a sign, which here means share of
+     what I watch minus share of what is available. */
+  --color-over: #3987e5;
+  --color-under: #e66767;
+  --color-mid: #383835;
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 

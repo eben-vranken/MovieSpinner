@@ -12,6 +12,8 @@ import {
   TSPDT_URL,
 } from './sources';
 import type { SourceEntry } from './sources';
+import { loadPoolCandidates, shapePool } from './shape';
+import type { ShapeConfig, ShapeResult } from './shape';
 
 /**
  * Build step 4: seed the candidate lists, dedupe, exclude watched.
@@ -45,6 +47,7 @@ export interface ListReport {
 
 export interface PoolResult {
   lists: ListReport[];
+  shaped: ShapeResult;
   poolSize: number;
   distinctFromLists: number;
   alreadyWatched: number;
@@ -184,6 +187,8 @@ export interface BuildOptions {
   /** Re-scrape the canon list pages and bypass the TMDB response cache. */
   refresh?: boolean;
   region?: string;
+  /** Overrides for the auteur cap and the floors that protect it. */
+  shape?: ShapeConfig;
   onStage?: (message: string) => void;
 }
 
@@ -397,10 +402,8 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
 
   // --- materialise the pool -------------------------------------------------
   stage('deduping and excluding watched');
-  const result = db.transaction(() => {
-    db.prepare('DELETE FROM pool').run();
+  db.transaction(() => {
     db.prepare('DELETE FROM pool_excluded').run();
-
     db.prepare(
       `INSERT INTO pool_excluded (tmdb_id, reason)
        SELECT DISTINCT e.tmdb_id, 'watched' FROM pool_list_entries e
@@ -409,36 +412,60 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
          WHERE m.tmdb_id IS NOT NULL
        )`,
     ).run();
+  })();
 
-    // A watchlist film stays in the pool and earns a bonus later. A watched film
-    // never comes back, so exclusion is applied after the watchlist flag rather
-    // than being something a bonus could override.
-    // Shorts are excluded. The brief says runtime is a soft signal and that a
-    // three-hour film on a weeknight is fine, but a seventeen-minute short is
-    // not a day's film in the sense any of this is about. Films with no runtime
-    // on record stay in rather than being punished for a missing field.
-    db.prepare(
+  // Shaping happens outside SQL because the per-director cap needs a ranked
+  // selection and a feedback loop against the movement and region floors, and
+  // expressing that as one statement would make it unreadable and unfixable.
+  const shaped = shapePool(loadPoolCandidates(db), options.shape);
+  stage(
+    `shaped: kept ${shaped.kept.length}, dropped ${shaped.dropped.length}` +
+      (shaped.rescued.length > 0 ? `, rescued ${shaped.rescued.length} to hold a floor` : '') +
+      (shaped.unreachable.length > 0 ? `, ${shaped.unreachable.length} bucket(s) unreachable` : ''),
+  );
+
+  const result = db.transaction(() => {
+    db.prepare('DELETE FROM pool').run();
+    db.prepare('DELETE FROM pool_dropped').run();
+    db.prepare('DELETE FROM pool_cap_overrides').run();
+
+    const insert = db.prepare(
       `INSERT INTO pool (tmdb_id, list_count, best_rank, on_watchlist, kinds, added_at)
-       SELECT e.tmdb_id,
-              COUNT(DISTINCT e.list_slug),
-              MIN(e.position),
-              CASE WHEN e.tmdb_id IN (
-                SELECT m.tmdb_id FROM watchlist wl JOIN film_matches m ON m.film_id = wl.film_id
-                WHERE m.tmdb_id IS NOT NULL
-              ) THEN 1 ELSE 0 END,
-              (SELECT GROUP_CONCAT(DISTINCT l.kind) FROM pool_list_entries e2
-               JOIN pool_lists l ON l.slug = e2.list_slug WHERE e2.tmdb_id = e.tmdb_id),
-              ?
-       FROM pool_list_entries e
-       JOIN tmdb_films t ON t.tmdb_id = e.tmdb_id
-       WHERE e.tmdb_id NOT IN (SELECT tmdb_id FROM pool_excluded)
-         AND (t.runtime IS NULL OR t.runtime = 0 OR t.runtime >= 40
-              -- A lineage edge is a hand-written argument that this exact film
-              -- matters, which outranks a blanket rule about length. Night and
-              -- Fog is thirty-two minutes and belongs in the pool.
-              OR EXISTS (SELECT 1 FROM lineage_edges le WHERE le.to_tmdb_id = e.tmdb_id))
-       GROUP BY e.tmdb_id`,
-    ).run(now);
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const film of shaped.kept) {
+      insert.run(
+        film.tmdbId,
+        film.listCount,
+        film.bestPosition,
+        film.onWatchlist ? 1 : 0,
+        film.kinds.join(','),
+        now,
+      );
+    }
+
+    const dropRow = db.prepare(
+      'INSERT INTO pool_dropped (tmdb_id, title, year, reason, detail) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING',
+    );
+    for (const film of shaped.dropped) {
+      dropRow.run(film.tmdbId, film.title, film.year, film.reason, film.detail);
+    }
+    for (const row of db
+      .prepare(
+        `SELECT e.tmdb_id, t.title, t.year FROM pool_excluded x
+         JOIN pool_list_entries e ON e.tmdb_id = x.tmdb_id
+         JOIN tmdb_films t ON t.tmdb_id = e.tmdb_id GROUP BY e.tmdb_id`,
+      )
+      .all() as { tmdb_id: number; title: string; year: number | null }[]) {
+      dropRow.run(row.tmdb_id, row.title, row.year, 'watched', 'already in the watched set');
+    }
+
+    const rescueRow = db.prepare(
+      'INSERT INTO pool_cap_overrides (person_id, name, cap, because) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING',
+    );
+    for (const row of shaped.rescued) {
+      rescueRow.run(row.tmdbId, row.title, row.votes, row.because);
+    }
 
     const scalar = (sql: string): number => (db.prepare(sql).get() as { n: number }).n;
     return {
@@ -451,6 +478,7 @@ export async function buildPool(db: Db, options: BuildOptions = {}): Promise<Poo
 
   return {
     lists,
+    shaped,
     ...result,
     requests: client.stats.requests,
     cacheHits: client.stats.cacheHits,

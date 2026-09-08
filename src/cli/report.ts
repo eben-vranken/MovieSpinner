@@ -1,11 +1,12 @@
 import { openDb } from '../db/client';
+import { DEFAULT_TUNING } from '../engine/tuning';
 
 /**
  * Verification for the whole pipeline.
  *
  * The first section reproduces the figures the brief states about my Letterboxd
  * data; if those drift, something upstream is wrong and nothing downstream
- * (coverage, weighting, the daily pick) can be trusted. The rest checks that
+ * (coverage, weighting, the daily slate) can be trusted. The rest checks that
  * enrichment cleared the brief's match-rate bar, that coverage is computable,
  * and that the pool can actually supply every gap the weights will open.
  *
@@ -48,8 +49,8 @@ function check(label: string, actual: number, expected: number, tolerance = 0): 
 function main(): void {
   const db = openDb();
 
-  const scalar = (sql: string): number =>
-    (db.prepare(sql).get() as { n: number } | undefined)?.n ?? 0;
+  const scalar = (sql: string, ...args: unknown[]): number =>
+    (db.prepare(sql).get(...args) as { n: number } | undefined)?.n ?? 0;
 
   const watched = scalar('SELECT COUNT(*) AS n FROM watched');
   const rated = scalar('SELECT COUNT(*) AS n FROM ratings');
@@ -254,10 +255,12 @@ function main(): void {
     // The check that matters: can every gap the weights will open actually be
     // filled from the pool? A zero here would make the engine chase a hole it
     // has no film to put in.
+    // The floor the pool shaping enforces. Cinema du look sits one under it and
+    // always will: three directors over fourteen years is not fifteen films.
     const starvedMovements = scalar(
       `SELECT COUNT(*) AS n FROM movements m
        WHERE (SELECT COUNT(*) FROM pool p JOIN film_movements fm ON fm.tmdb_id = p.tmdb_id
-              WHERE fm.movement = m.slug) < 5`,
+              WHERE fm.movement = m.slug) < 15`,
     );
     const thinnest = db
       .prepare(
@@ -267,9 +270,9 @@ function main(): void {
       )
       .get() as { name: string; n: number } | undefined;
     console.log(
-      `  ${starvedMovements === 0 ? 'PASS' : 'FAIL'}  every movement supplied  ` +
+      `  ${starvedMovements === 0 ? 'PASS' : 'WARN'}  movements above floor 15 ` +
         `thinnest is ${thinnest?.name ?? '-'} at ${thinnest?.n ?? 0} films` +
-        (starvedMovements > 0 ? `; ${starvedMovements} under 5` : ''),
+        (starvedMovements > 0 ? `; ${starvedMovements} below` : ''),
     );
     console.log(
       `  ${scalar('SELECT COUNT(*) AS n FROM pool p JOIN tmdb_films t ON t.tmdb_id = p.tmdb_id WHERE t.year < 1950') > 100 ? 'PASS' : 'FAIL'}` +
@@ -297,14 +300,34 @@ function main(): void {
     console.log(
       `  ${reachable === targets ? 'PASS' : 'WARN'}  every edge target in pool ${reachable} of ${targets}`,
     );
+    // Slates and picks are separate counts on purpose: a day the cron prepared
+    // and nobody opened has five films and no pick, which is not a failure.
+    const slateDays = scalar('SELECT COUNT(DISTINCT slate_date) AS n FROM slates');
+    const offered = scalar('SELECT COUNT(*) AS n FROM slates');
+    console.log(
+      `        slates drawn         ${slateDays} day(s), ${offered} film(s) offered`,
+    );
+    // A short slate is legal -- the draw stops early rather than padding when
+    // nothing left has any weight -- but it should be rare enough to notice.
+    // Days carried over from the one-a-day era are one film by design.
+    const shortSlates = scalar(
+      'SELECT COUNT(*) AS n FROM (SELECT slate_date FROM slates GROUP BY slate_date HAVING COUNT(*) <> ?)',
+      DEFAULT_TUNING.slateSize,
+    );
+    if (slateDays > 0) {
+      console.log(
+        `        slates of ${DEFAULT_TUNING.slateSize}           ` +
+          `${slateDays - shortSlates} of ${slateDays} day(s)`,
+      );
+    }
     if (picked === 0) {
-      console.log('        picks made           none yet. Run: npm run pick');
+      console.log('        films chosen         none yet. Run: npm run slate');
     } else {
       const byStatus = db
         .prepare('SELECT status, COUNT(*) AS n FROM picks GROUP BY status')
         .all() as { status: string; n: number }[];
       console.log(
-        `        picks made           ${picked} (${byStatus.map((row) => `${row.n} ${row.status}`).join(', ')})`,
+        `        films chosen         ${picked} (${byStatus.map((row) => `${row.n} ${row.status}`).join(', ')})`,
       );
       const dupes = scalar(
         'SELECT COUNT(*) AS n FROM (SELECT tmdb_id FROM picks GROUP BY tmdb_id HAVING COUNT(*) > 1)',
@@ -323,7 +346,7 @@ function main(): void {
       `${feedEntries} feed entries seen, ${autoClosed} pick(s) auto-closed`,
   );
   console.log(`        snapshots for the trend  ${scalar('SELECT COUNT(*) AS n FROM coverage_snapshot_meta')}`);
-  console.log('        pages                    / (today), /dashboard, /lineage');
+  console.log('        pages                    / — the whole thing, one route');
   console.log('        run it with              npm run dev');
 
   const issues = db
@@ -361,7 +384,7 @@ function main(): void {
           ? 'Steps 1 to 3 verified. Run npm run pool for step 4.'
           : edges === 0
             ? 'Steps 1 to 4 verified. Run npm run simulate for step 5.'
-            : 'All nine build steps verified.';
+            : 'All ten build steps verified.';
   console.log(`\n${verdict}`);
   if (!allOk) process.exitCode = 1;
 }

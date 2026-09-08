@@ -1,6 +1,9 @@
 import { migrate, openDb } from '../db/client';
 import { loadMovements } from '../coverage';
-import { applyPick, createEngine, draw, loadState, statureOf, DEFAULT_TUNING } from '../engine';
+import { applyPick, createEngine, loadState, statureOf, DEFAULT_TUNING } from '../engine';
+import type { Candidate } from '../engine';
+import { drawSlate } from '../engine/slate';
+import type { SlateEntry } from '../engine/slate';
 import { loadLineage } from '../engine/lineage';
 import { randomForSeed } from '../engine/random';
 
@@ -9,14 +12,28 @@ import { randomForSeed } from '../engine/random';
  * the distribution before building any UI. This is where the project succeeds
  * or fails."
  *
+ * That mattered more, not less, once the day became a slate of five. Handing
+ * over a choice is exactly the kind of change that can quietly undo the whole
+ * project: if the five always contain something safe, you will take the safe
+ * one every time and the blind-spot weighting becomes decoration. So the
+ * simulation now models the chooser explicitly, and you can run the pessimistic
+ * one on purpose.
+ *
+ *   --chooser random    uniform over the five. The neutral assumption. (default)
+ *   --chooser top       always the highest-weighted film. What the old
+ *                       one-a-day draw effectively did.
+ *   --chooser findable  always the most-voted film on the slate. The
+ *                       pessimistic model: you take the one you have heard of.
+ *                       If coverage still closes under this, the slate is safe.
+ *
  * Nothing is written to the database. The simulation rolls a copy of the state
- * forward, assuming I watch what I am given, so coverage closes and cooldowns
- * fire exactly as they would in real use.
+ * forward so coverage closes and cooldowns fire exactly as they would in use.
  *
  * Usage:
  *   npm run simulate
- *   npm run simulate -- --days 365 --skip-rate 0.15 --start 2026-09-08
- *   npm run simulate -- --list        # print every pick, not just the first weeks
+ *   npm run simulate -- --days 365 --chooser findable --start 2026-09-08
+ *   npm run simulate -- --miss-rate 0.15   # days you choose nothing at all
+ *   npm run simulate -- --list             # print every day, not just the first weeks
  */
 
 const arg = (name: string, fallback: string): string => {
@@ -37,6 +54,32 @@ function histogram(counts: Map<string, number>, limit = 12, per = 1): string[] {
     .map(([key, n]) => `    ${String(n).padStart(3)}  ${key.padEnd(28)}${'#'.repeat(Math.round(n / per))}`);
 }
 
+const provenanceOf = (candidate: Candidate): string =>
+  candidate.tspdtRank !== null
+    ? `TSPDT ${candidate.tspdtRank <= 250 ? 'top 250' : candidate.tspdtRank <= 500 ? '251-500' : '501-1000'}`
+    : candidate.kinds.includes('lineage')
+      ? 'lineage'
+      : candidate.kinds.includes('collection')
+        ? 'Criterion'
+        : candidate.kinds.includes('auteur')
+          ? 'auteur list'
+          : 'regional list';
+
+type Chooser = 'random' | 'top' | 'findable';
+
+/** Which of the five a simulated person takes. */
+function choose(entries: SlateEntry[], chooser: Chooser, dice: () => number): SlateEntry {
+  if (chooser === 'top') {
+    return entries.reduce((best, entry) => (entry.scored.weight > best.scored.weight ? entry : best));
+  }
+  if (chooser === 'findable') {
+    return entries.reduce((best, entry) =>
+      entry.scored.candidate.voteCount > best.scored.candidate.voteCount ? entry : best,
+    );
+  }
+  return entries[Math.floor(dice() * entries.length)] ?? entries[0]!;
+}
+
 function main(): void {
   const db = openDb();
   migrate(db);
@@ -45,8 +88,13 @@ function main(): void {
   for (const problem of lineage.problems) console.log(`  warning: ${problem}`);
 
   const days = Number.parseInt(arg('days', '365'), 10);
-  const skipRate = Number.parseFloat(arg('skip-rate', '0'));
+  const missRate = Number.parseFloat(arg('miss-rate', '0'));
   const start = arg('start', new Date().toISOString().slice(0, 10));
+  const chooser = arg('chooser', 'random') as Chooser;
+  if (!['random', 'top', 'findable'].includes(chooser)) {
+    console.log(`Unknown chooser "${chooser}". Use random, top or findable.`);
+    return;
+  }
 
   const engine = createEngine(db, DEFAULT_TUNING);
   const state = loadState(db);
@@ -64,106 +112,104 @@ function main(): void {
   };
 
   console.log(
-    `Simulating ${days} days from ${start}, ${engine.candidates.length} films in the pool, ` +
-      `${lineage.edges} lineage edges` +
-      (skipRate > 0 ? `, skipping ${(skipRate * 100).toFixed(0)}% of picks` : ', watching everything'),
+    `Simulating ${days} days from ${start}, ${engine.tuning.slateSize} films offered a day, ` +
+      `${engine.candidates.length} in the pool, ${lineage.edges} lineage edges.\n` +
+      `Chooser: ${chooser}` +
+      (missRate > 0 ? `, missing ${(missRate * 100).toFixed(0)}% of days entirely` : ', every day taken'),
   );
 
-  const skipDice = randomForSeed(`simulate-skips:${start}:${days}`);
-  const picks: {
+  const dice = randomForSeed(`simulate-choice:${chooser}:${start}:${days}`);
+  const missDice = randomForSeed(`simulate-misses:${start}:${days}`);
+
+  interface Day {
     date: string;
-    tmdbId: number;
+    kind: string;
+    /** Every film offered, chosen or not. */
+    offered: Candidate[];
+    taken: Candidate | null;
     provenance: string;
     stature: number;
     votes: number;
-    title: string;
-    year: number | null;
-    kind: string;
-    country: string | null;
-    decade: string;
-    directors: string[];
-    movements: string[];
-    runtime: number | null;
     share: number;
     topShare: number;
     lineage?: { fromTitle: string; rationale: string };
-    skipped: boolean;
-  }[] = [];
+  }
+
+  const log: Day[] = [];
 
   for (let day = 0; day < days; day += 1) {
     const date = addDays(start, day);
-    const result = draw(engine, state, date);
-    const skipped = skipRate > 0 && skipDice() < skipRate;
-    const candidate = result.chosen.candidate;
-    picks.push({
+    const slate = drawSlate(engine, state, date);
+    const missed = missRate > 0 && missDice() < missRate;
+    const entry = choose(slate.entries, chooser, dice);
+    const candidate = entry.scored.candidate;
+
+    log.push({
       date,
-      tmdbId: candidate.tmdbId,
-      provenance:
-        candidate.tspdtRank !== null
-          ? `TSPDT ${candidate.tspdtRank <= 250 ? 'top 250' : candidate.tspdtRank <= 500 ? '251-500' : '501-1000'}`
-          : candidate.kinds.includes('lineage')
-            ? 'lineage'
-            : candidate.kinds.includes('collection')
-              ? 'Criterion'
-              : candidate.kinds.includes('auteur')
-                ? 'auteur list'
-                : 'regional list',
+      kind: slate.kind,
+      offered: slate.entries.map((offer) => offer.scored.candidate),
+      taken: missed ? null : candidate,
+      provenance: provenanceOf(candidate),
       stature: statureOf(candidate, engine.tuning),
       votes: candidate.voteCount,
-      title: result.chosen.candidate.title,
-      year: result.chosen.candidate.year,
-      kind: result.kind,
-      country: result.chosen.candidate.country,
-      decade: result.chosen.candidate.decade,
-      directors: result.chosen.candidate.directorNames,
-      movements: result.chosen.candidate.movements,
-      runtime: result.chosen.candidate.runtime,
-      share: result.share,
-      topShare: result.topShare,
-      lineage: result.chosen.candidate.lineage,
-      skipped,
+      share: entry.share,
+      topShare: slate.topShare,
+      lineage: candidate.lineage,
     });
-    applyPick(state, date, result.chosen.candidate, skipped);
+
+    // A day you skipped entirely leaves no trace: nothing was chosen, so
+    // nothing is taken out of the pool and nothing is recorded as skipped.
+    // That is the honest model now that skipping a film no longer exists.
+    if (!missed) applyPick(state, date, candidate, false);
   }
 
   const showAll = process.argv.includes('--list');
-  const preview = showAll ? picks : picks.slice(0, 21);
-  console.log(`\nFirst ${preview.length} picks:`);
-  for (const pick of preview) {
-    const tag = pick.kind === 'junk-valve' ? ' [junk valve]' : '';
-    const runtime = pick.runtime ? `${pick.runtime}m` : '?';
-    console.log(
-      `  ${pick.date}  ${(pick.title + ` (${pick.year ?? '?'})`).padEnd(46)}` +
-        `${(pick.country ?? '--').padEnd(3)} ${runtime.padStart(5)}${tag}`,
-    );
-    if (pick.lineage) console.log(`             ${pick.lineage.rationale}`);
-    else if (pick.skipped) console.log('             (skipped in this simulation)');
+  const preview = showAll ? log : log.slice(0, 14);
+  console.log(`\nFirst ${preview.length} days (> is the film taken):`);
+  for (const day of preview) {
+    console.log(`\n  ${day.date}${day.kind === 'junk-valve' ? '  (junk valve)' : ''}`);
+    for (const film of day.offered) {
+      const mark = day.taken?.tmdbId === film.tmdbId ? '>' : ' ';
+      const runtime = film.runtime ? `${film.runtime}m` : '?';
+      console.log(
+        `    ${mark} ${(film.title + ` (${film.year ?? '?'})`).padEnd(46)}` +
+          `${(film.country ?? '--').padEnd(3)} ${runtime.padStart(5)}`,
+      );
+    }
+    if (day.taken === null) console.log('      (nothing chosen on this day)');
+    else if (day.lineage) console.log(`      ${day.lineage.rationale}`);
   }
 
   // --- distribution ---------------------------------------------------------
-  const watched = picks.filter((pick) => !pick.skipped);
+  const taken = log.filter((day): day is Day & { taken: Candidate } => day.taken !== null);
   const byDecade = new Map<string, number>();
   const byCountry = new Map<string, number>();
   const byMovement = new Map<string, number>();
   const byDirector = new Map<string, number>();
   const byFilm = new Map<number, number>();
   const byProvenance = new Map<string, number>();
-  for (const pick of picks) {
-    byProvenance.set(pick.provenance, (byProvenance.get(pick.provenance) ?? 0) + 1);
+  const offeredCount = new Map<number, number>();
+
+  for (const day of log) {
+    byProvenance.set(day.provenance, (byProvenance.get(day.provenance) ?? 0) + 1);
+    for (const film of day.offered) {
+      offeredCount.set(film.tmdbId, (offeredCount.get(film.tmdbId) ?? 0) + 1);
+    }
   }
-  for (const pick of watched) {
-    byDecade.set(pick.decade, (byDecade.get(pick.decade) ?? 0) + 1);
-    byCountry.set(pick.country ?? '--', (byCountry.get(pick.country ?? '--') ?? 0) + 1);
-    for (const movement of pick.movements) {
+  for (const day of taken) {
+    const film = day.taken;
+    byDecade.set(film.decade, (byDecade.get(film.decade) ?? 0) + 1);
+    byCountry.set(film.country ?? '--', (byCountry.get(film.country ?? '--') ?? 0) + 1);
+    for (const movement of film.movements) {
       byMovement.set(movement, (byMovement.get(movement) ?? 0) + 1);
     }
-    for (const director of pick.directors) {
+    for (const director of film.directorNames) {
       byDirector.set(director, (byDirector.get(director) ?? 0) + 1);
     }
-    byFilm.set(pick.tmdbId, (byFilm.get(pick.tmdbId) ?? 0) + 1);
+    byFilm.set(film.tmdbId, (byFilm.get(film.tmdbId) ?? 0) + 1);
   }
 
-  console.log(`\nOver ${days} days, ${watched.length} watched:`);
+  console.log(`\nOver ${days} days, ${taken.length} films actually taken:`);
   console.log('\n  Decade:');
   for (const line of histogram(byDecade, 12, 2)) console.log(line);
   console.log('\n  Country (top 12):');
@@ -174,43 +220,41 @@ function main(): void {
   // Provenance is the check on quality rather than spread. A year made mostly of
   // regional-list filler would score perfectly on every distribution above and
   // still be a bad year of films.
-  console.log('\n  Where the picks came from:');
+  console.log('\n  Where the taken films came from:');
   for (const line of histogram(byProvenance, 8, 2)) console.log(line);
-  const obscure = picks.filter((pick) => pick.votes < 100).length;
-  console.log(`    ${obscure} pick(s) had fewer than 100 TMDB votes (${pct(obscure, picks.length)})`);
-
-  console.log('\n  Junk valve served:');
-  for (const pick of picks.filter((entry) => entry.kind === 'junk-valve').slice(0, 8)) {
-    console.log(
-      `    ${(pick.title + ` (${pick.year ?? '?'})`).padEnd(44)} ${String(pick.votes).padStart(6)} votes`,
-    );
-  }
+  const obscure = taken.filter((day) => day.votes < 100).length;
+  console.log(`    ${obscure} film(s) had fewer than 100 TMDB votes (${pct(obscure, taken.length)})`);
 
   // --- health checks --------------------------------------------------------
-  const lineagePicks = picks.filter((pick) => pick.lineage).length;
-  const junkPicks = picks.filter((pick) => pick.kind === 'junk-valve').length;
+  const lineageDays = log.filter((day) => day.lineage).length;
+  const junkDays = log.filter((day) => day.kind === 'junk-valve').length;
   const repeats = [...byFilm.values()].filter((n) => n > 1).length;
   const maxDirector = Math.max(0, ...byDirector.values());
-  const meanTopShare = picks.reduce((sum, pick) => sum + pick.topShare, 0) / picks.length;
-  const meanShare = picks.reduce((sum, pick) => sum + pick.share, 0) / picks.length;
-  const longFilms = watched.filter((pick) => (pick.runtime ?? 0) >= 150).length;
+  const meanTopShare = log.reduce((sum, day) => sum + day.topShare, 0) / log.length;
+  const meanShare = log.reduce((sum, day) => sum + day.share, 0) / log.length;
+  const longFilms = taken.filter((day) => (day.taken.runtime ?? 0) >= 150).length;
+  const distinctOffered = offeredCount.size;
+  const reOffered = [...offeredCount.values()].filter((n) => n > 1).length;
 
   console.log('\nHealth checks:');
-  console.log(`  ${repeats === 0 ? 'PASS' : 'FAIL'}  no film picked twice            ${repeats} repeats`);
+  console.log(`  ${repeats === 0 ? 'PASS' : 'FAIL'}  no film taken twice             ${repeats} repeats`);
   console.log(
     `  ${meanTopShare < 0.05 ? 'PASS' : 'WARN'}  the draw stays a surprise       ` +
       `best-weighted film averages ${pct(meanTopShare, 1)} of the draw`,
   );
   console.log(
-    `        the chosen film averaged        ${pct(meanShare, 1)}, so it is rarely the favourite`,
+    `        the taken film averaged         ${pct(meanShare, 1)} of its draw`,
   );
   console.log(
-    `  ${lineagePicks > days / 30 ? 'PASS' : 'WARN'}  lineage reaches the card        ` +
-      `${lineagePicks} picks arrived with a reason (${pct(lineagePicks, days)})`,
+    `  ${lineageDays > days / 30 ? 'PASS' : 'WARN'}  lineage reaches the slate       ` +
+      `${lineageDays} days offered a film with a reason (${pct(lineageDays, days)})`,
   );
-  console.log(`        junk valve fired                ${junkPicks} times (${pct(junkPicks, days)})`);
+  console.log(`        junk valve fired                ${junkDays} times (${pct(junkDays, days)})`);
   console.log(`        most films by one director      ${maxDirector}`);
-  console.log(`        150 minutes or longer           ${longFilms} (${pct(longFilms, watched.length)})`);
+  console.log(`        150 minutes or longer           ${longFilms} (${pct(longFilms, taken.length)})`);
+  console.log(
+    `        distinct films offered          ${distinctOffered} (${reOffered} came up more than once)`,
+  );
 
   // --- what actually closed -------------------------------------------------
   console.log('\nCoverage closing:');
