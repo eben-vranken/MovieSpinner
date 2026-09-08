@@ -2,10 +2,13 @@ import { Legend, Panel, StatTile, TableView } from './_charts/Chart';
 import { BarRows, Columns, Diverging, Matrix, StackedBar, TimeArea, VIZ } from './_charts/plots';
 import { WorldMap } from './_charts/WorldMap';
 import { LineagePanel } from './_lineage/LineagePanel';
+import { Setup } from './_setup/Setup';
+import { ImportPanel } from './_setup/ImportPanel';
 import { Slate } from './_slate/Slate';
 import { loadAnalytics } from '../lib/analytics';
 import { ensureSlate } from '../lib/slate';
 import type { SlateView } from '../lib/slate';
+import { appStatus } from '../lib/status';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,15 +21,25 @@ export const dynamic = 'force-dynamic';
  * disagree -- because the point of the choice at the top is that it is informed
  * rather than random, and you cannot see that from a poster.
  *
- * Read on the server, drawn on the server. No charting library, no client
- * bundle beyond the one search box the lineage editor needs: everything here is
- * a rectangle, a path, or a table.
+ * Read on the server, drawn on the server. No charting library, and the only
+ * client components are the three things that genuinely need to be interactive:
+ * the pool search, the lineage film picker, and the import progress. Everything
+ * else here is a rectangle, a path, or a table.
+ *
+ * On an install that has not been set up, this renders the setup screen
+ * instead. That is not a nicety -- `ensureSlate`, `loadAnalytics` and
+ * `tmdbConfig` all throw on an empty database, correctly, and the first thing a
+ * new user needs is the page that says what to do rather than a stack trace.
  */
 
 const DECADE_HINT =
   'Every watched film by decade, on the Letterboxd year. The pool column is what is available to fix a thin one.';
 
 export default async function Page() {
+  // Cheap, and it never throws. Everything below it assumes a full database.
+  const status = appStatus();
+  if (status.readiness !== 'ready') return <Setup status={status} />;
+
   const data = loadAnalytics();
 
   let slate: SlateView | null = null;
@@ -596,6 +609,19 @@ export default async function Page() {
           </Panel>
         </div>
       </section>
+
+      {/* Re-importing is a maintenance job, not a daily one, so it lives at the
+          bottom folded shut. Letterboxd exports are a manual request and most
+          people will do this every few months at most. */}
+      <footer className="border-t border-edge pt-6">
+        <ImportPanel status={status} compact />
+        <p className="mt-3 text-xs text-muted">
+          {status.lastImport?.username ? `${status.lastImport.username} · ` : ''}
+          {status.watched.toLocaleString()} films from an export imported{' '}
+          {status.lastImport?.importedAt.slice(0, 10) ?? 'at some point'}. The daily sync reads the
+          RSS feed; a full export refresh is the only way to update the coverage numbers.
+        </p>
+      </footer>
     </div>
   );
 }

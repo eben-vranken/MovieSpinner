@@ -1,9 +1,10 @@
 import { migrate, openDb } from '../db/client';
 import { sync } from '../sync';
+import { letterboxdUser } from '../setup/pipeline';
 
 /**
- * The daily job. Reads the Letterboxd feed, closes out picks I have watched,
- * and makes sure today has a film waiting.
+ * The daily job. Reads the Letterboxd feed, closes out picks that have been
+ * watched, and makes sure today has a slate waiting.
  *
  * Usage:
  *   npm run sync
@@ -16,9 +17,11 @@ const arg = (name: string, fallback: string): string => {
 };
 
 async function main(): Promise<void> {
-  const username = arg('user', process.env['LETTERBOXD_USER'] ?? 'EbenVranken');
   const db = openDb();
   migrate(db);
+  // Defaults to the profile the last import came from, so this works on a
+  // fresh install without anyone setting an environment variable.
+  const username = arg('user', '') || letterboxdUser(db);
 
   const result = await sync(db, username, { generate: !process.argv.includes('--no-generate') });
 

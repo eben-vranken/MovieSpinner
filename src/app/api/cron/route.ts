@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '../../../lib/db';
 import { sync } from '../../../sync';
+import { letterboxdUser } from '../../../setup/pipeline';
 
 /**
  * The daily job as an HTTP endpoint, for Vercel Cron or any scheduler that can
@@ -22,7 +23,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await sync(db(), process.env['LETTERBOXD_USER'] ?? 'EbenVranken');
+    const handle = db();
+    const result = await sync(handle, letterboxdUser(handle));
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(

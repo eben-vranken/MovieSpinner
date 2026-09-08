@@ -13,7 +13,16 @@ import { DEFAULT_TUNING } from '../engine/tuning';
  * Usage: npm run report
  */
 
-/** The numbers quoted in the brief, from the Sept 2026 export. */
+/**
+ * The numbers quoted in the brief, from the Sept 2026 export.
+ *
+ * These are one person's figures, so they are only a pass/fail check when that
+ * person's export is the one loaded. On anybody else's data they would be a
+ * screenful of FAILs that mean nothing, so the comparison is skipped and the
+ * same figures are printed plainly instead.
+ */
+const BRIEF_PROFILE = 'EbenVranken';
+
 const EXPECTED = {
   watched: 436,
   rated: 410,
@@ -96,29 +105,56 @@ function main(): void {
     return;
   }
 
-  console.log('\nAgainst the brief:');
-  console.log(check('watched films', watched, EXPECTED.watched));
-  console.log(check('rated films', rated, EXPECTED.rated));
-  console.log(check('rewatches', rewatches, EXPECTED.rewatches));
-  console.log(check('watchlist', watchlist, EXPECTED.watchlist));
-  console.log(check('mean rating', Number(mean.toFixed(2)), EXPECTED.meanRating, 0.01));
-  console.log(check('median rating', median, EXPECTED.medianRating));
-  console.log(check('oldest film year', oldest?.year ?? 0, EXPECTED.oldestYear));
+  const isBriefProfile = lastImport.username === BRIEF_PROFILE;
+  let decadesOk = true;
+
+  if (isBriefProfile) {
+    console.log('\nAgainst the brief:');
+    console.log(check('watched films', watched, EXPECTED.watched));
+    console.log(check('rated films', rated, EXPECTED.rated));
+    console.log(check('rewatches', rewatches, EXPECTED.rewatches));
+    console.log(check('watchlist', watchlist, EXPECTED.watchlist));
+    console.log(check('mean rating', Number(mean.toFixed(2)), EXPECTED.meanRating, 0.01));
+    console.log(check('median rating', median, EXPECTED.medianRating));
+    console.log(check('oldest film year', oldest?.year ?? 0, EXPECTED.oldestYear));
+  } else {
+    console.log(`\nProfile (${lastImport.username ?? 'unknown'}):`);
+    const line = (label: string, value: string | number): void =>
+      console.log(`        ${label.padEnd(22)} ${String(value).padStart(6)}`);
+    line('watched films', watched);
+    line('rated films', rated);
+    line('rewatches', rewatches);
+    line('watchlist', watchlist);
+    line('mean rating', mean.toFixed(2));
+    line('median rating', median);
+    line('oldest film year', oldest?.year ?? 0);
+    console.log(
+      `\n  The brief's figures describe ${BRIEF_PROFILE}'s export, so they are not compared\n` +
+        '  against here. Everything below is checked normally.',
+    );
+  }
 
   console.log('\nCoverage by decade:');
-  let decadesOk = true;
   for (const [label, expected] of Object.entries(EXPECTED.decades)) {
     const actual = decades.get(label) ?? 0;
-    if (actual !== expected) decadesOk = false;
     const bar = '#'.repeat(Math.round(actual / 3));
+    if (!isBriefProfile) {
+      console.log(`        ${label.padEnd(9)} ${String(actual).padStart(4)}  ${bar}`);
+      continue;
+    }
+    if (actual !== expected) decadesOk = false;
     console.log(
       `  ${actual === expected ? 'PASS' : 'FAIL'}  ${label.padEnd(9)} ${String(actual).padStart(4)}  ${bar}`,
     );
   }
   for (const [label, actual] of decades) {
     if (!(label in EXPECTED.decades)) {
-      decadesOk = false;
-      console.log(`  FAIL  ${label.padEnd(9)} ${String(actual).padStart(4)}  (not in the brief)`);
+      if (isBriefProfile) {
+        decadesOk = false;
+        console.log(`  FAIL  ${label.padEnd(9)} ${String(actual).padStart(4)}  (not in the brief)`);
+      } else {
+        console.log(`        ${label.padEnd(9)} ${String(actual).padStart(4)}`);
+      }
     }
   }
 
@@ -367,13 +403,17 @@ function main(): void {
 
   db.close();
 
+  // On another person's export the brief's counts are not a criterion; the
+  // match rate and the review queue still are, because those are about whether
+  // the pipeline worked rather than about whose data it worked on.
   const allOk =
     decadesOk &&
     (attempted === 0 || (matchRate >= 90 && unreviewed === 0)) &&
-    watched === EXPECTED.watched &&
-    rated === EXPECTED.rated &&
-    rewatches === EXPECTED.rewatches &&
-    watchlist === EXPECTED.watchlist;
+    (!isBriefProfile ||
+      (watched === EXPECTED.watched &&
+        rated === EXPECTED.rated &&
+        rewatches === EXPECTED.rewatches &&
+        watchlist === EXPECTED.watchlist));
   const verdict = !allOk
     ? 'Something does not line up. Investigate before moving on.'
     : attempted === 0
@@ -384,7 +424,7 @@ function main(): void {
           ? 'Steps 1 to 3 verified. Run npm run pool for step 4.'
           : edges === 0
             ? 'Steps 1 to 4 verified. Run npm run simulate for step 5.'
-            : 'All ten build steps verified.';
+            : 'All eleven build steps verified.';
   console.log(`\n${verdict}`);
   if (!allOk) process.exitCode = 1;
 }

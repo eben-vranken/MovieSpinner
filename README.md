@@ -1,20 +1,39 @@
 # MovieSpinner
 
-A daily blind-spot film picker. Five films a day, weighted at the gaps in my
-film education rather than at my taste; I choose one and the choice is final.
-Everything that decided it is on the same page. See the project brief for the
-full design.
+A daily blind-spot film picker. Five films a day, weighted at the gaps in your
+film education rather than at your taste; you choose one and the choice is
+final. Everything that decided it is on the same page.
 
-All ten build steps are done: ingest, enrich, coverage, pool, engine, the daily
-slate, RSS sync, coverage charts, lineage editor, and folding the whole thing
-onto one page.
+It runs on your own Letterboxd history, entirely on your own machine. The only
+outbound calls are to TMDB for film metadata.
+
+## Start here
 
 ```
 npm install
-cp .env.example .env    # TMDB credentials
-npm run import && npm run enrich && npm run coverage && npm run pool
+cp .env.example .env    # add a free TMDB read token
 npm run dev             # http://localhost:3000
 ```
+
+Open it and the page walks you through the rest: it asks for your Letterboxd
+export, and builds everything from it. Get the export from
+[letterboxd.com/settings/data](https://letterboxd.com/settings/data/) — they
+email you a zip. Drop that into the upload box and wait a few minutes.
+
+If you would rather not use the browser for it, the same job is one command:
+
+```
+npm run setup                    # newest letterboxd-*.zip in ./data
+npm run setup -- path/to.zip     # or a specific export
+```
+
+Either way it runs four steps: read the export, match every film against TMDB,
+count your coverage, and build the candidate pool. The two TMDB steps are the
+slow ones — a few minutes on a first run, much less afterwards, because every
+response is cached on disk.
+
+Nothing is shared and there are no accounts. Everything lives in one SQLite
+file at `data/moviespinner.db`; delete it to start over.
 
 ## Running it
 
@@ -22,7 +41,8 @@ npm run dev             # http://localhost:3000
 npm install
 cp .env.example .env        # then fill in your TMDB credentials
 
-npm run import              # newest letterboxd-*.zip in ./data
+npm run setup               # import + enrich + coverage + pool, in one go
+npm run import              # or the four steps separately: newest letterboxd-*.zip in ./data
 npm run enrich              # match everything to TMDB, cache the metadata
 npm run matches             # anything TMDB matching could not settle
 npm run coverage            # decade / country / director / movement
@@ -93,7 +113,8 @@ PASS  RSS sync                          PASS  all ten build steps
 | `src/ingest/enrich.ts` | TMDB matching and metadata persistence |
 | `src/tmdb/client.ts` | TMDB HTTP, retry, on-disk response cache |
 | `src/tmdb/match.ts` | Title normalisation and candidate scoring |
-| `src/cli/*.ts` | The seven npm scripts |
+| `src/cli/*.ts` | The npm scripts |
+| `src/setup/pipeline.ts` | First run: the four steps as one job, with progress |
 | `src/coverage/index.ts` | Coverage counting, movement tagging, snapshots |
 | `src/pool/sources.ts` | Scrapers and config readers for the pool sources |
 | `src/pool/index.ts` | Resolve, dedupe, exclude watched, materialise |
@@ -105,7 +126,8 @@ PASS  RSS sync                          PASS  all ten build steps
 | `src/engine/random.ts` | Seeded PRNG, so a date always gives the same five |
 | `src/sync/rss.ts` | Letterboxd feed reader. No auth, no API application |
 | `src/app/page.tsx` | The entire UI. One route, no navigation |
-| `src/app/_slate/` | The five cards, and the film you took |
+| `src/app/_setup/` | First-run screen and the export upload box |
+| `src/app/_slate/` | The five cards, the pool search, and the film you took |
 | `src/app/_charts/` | Chart vocabulary and the world map. No library |
 | `src/app/_lineage/` | The edge editor, writing back to the CSV |
 | `src/lib/analytics.ts` | Every number the page draws, in one pass |
@@ -656,6 +678,80 @@ never take is the most interesting thing the log records — either the weightin
 is wrong about it or you are — and deleting the losers would throw that away.
 The page surfaces it two ways: a "passed over" count on each card, and an
 "offered and passed over" panel at the bottom.
+
+## Step 11: handing it to someone else
+
+Everything up to here assumed the person running this was the person who built
+it: the database was already full, the import ran from a terminal, and the zip
+was already sitting in `./data`. Giving the project to a friend breaks all three
+at once. They have their own export, no terminal necessarily open, and an empty
+database — the file is gitignored, so a clone starts with nothing.
+
+### The page had to stop crashing
+
+The first problem was not the upload, it was that a fresh install could not
+render at all. `tmdbConfig()` throws when there is no token, `ensureSlate`
+throws when the pool is empty, and `loadAnalytics` calls both. All three are
+right to throw — but the result was that the one screen a new user needs, the
+one telling them what to do, was the screen that could not be reached.
+
+So `src/lib/status.ts` answers that question first and never throws: it reads
+the token directly instead of through `tmdbConfig`, counts four tables, and
+returns a readiness in the order things block each other — no token, no export,
+no matches, no pool, ready. The page renders setup for anything but `ready`.
+
+### Importing is four steps, not one
+
+The awkward part is that "import my data" is not a single operation. It is read
+the export (instant), match every film against TMDB (minutes), count coverage
+(instant), and build the candidate pool (minutes). A server action cannot hold a
+request open across that, and a browser cannot be left with nothing to look at.
+
+`src/setup/pipeline.ts` runs the four as one job and writes progress to a
+`setup_runs` row rather than to memory. That choice pays for itself three ways:
+closing the tab loses nothing, a failure at step 3 of 4 leaves a record saying
+which step and why, and the "only one run at a time" guard survives the hot
+reload that dev mode does on every save — a module-level variable would not.
+
+The upload action deliberately does **not** await the pipeline. It saves the
+zip, starts the run, and returns; the page polls `/api/setup` every two seconds
+and reloads itself when readiness reaches `ready`. Progress writes are throttled
+to 400ms, because enrichment fires one callback per film and a synchronous
+SQLite write per film would cost more than the network calls it is reporting on.
+
+The uploaded zip is kept as a real file rather than a temporary one, because
+`imports` records its path and SHA-256, and provenance pointing at a file that
+was deleted a second later is not provenance. An upload named anything other
+than `letterboxd-*.zip` gets a generated name, which also disposes of path
+traversal: `../../evil name!.zip` lands as
+`letterboxd-upload-<timestamp>.zip` in the data directory.
+
+### Progress you can honestly report
+
+Only one of the four steps knows its own denominator. Matching has a film count
+and gets a bar; the pool build is a dozen scrapes and a few thousand lookups
+with no meaningful total. So the UI is a checklist with one bar in it rather
+than a single fake percentage, and each step says what it is doing in words.
+
+### Two CLIs were lying to your friend
+
+`npm run report` and `npm run coverage` both checked their output against the
+figures in the brief — 436 watched, 410 rated, 0 films before 1950. Those are
+one person's numbers. On anybody else's export they printed a wall of `FAIL`
+about nothing being wrong. Both now compare only when the loaded profile is the
+one the brief describes, and otherwise print the same figures plainly. The
+checks that are about whether the *pipeline* worked — match rate, review queue,
+edge targets in pool — still run for everyone, because those are not about whose
+data it is.
+
+### What a fresh install actually does
+
+Verified end to end against an empty database: readiness `empty`, pipeline run,
+readiness `ready`, first slate drawn. On warm caches that is 13 seconds; on a
+cold one it is minutes, nearly all of it TMDB. The first slate on a brand new
+install came out as *The Time to Live and the Time to Die*, *Onibaba*, *Sansho
+the Bailiff*, *Room 999* and *Morgiana* — which is the engine working, since a
+new user has no coverage anywhere and the draw falls back on stature.
 
 ## Data shape
 

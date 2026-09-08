@@ -12,7 +12,14 @@ import type { Bucket } from '../coverage';
  *   npm run coverage -- --snapshot   # also record today's numbers for §7
  */
 
-/** The decade counts the brief quotes, so drift is caught here too. */
+/**
+ * The decade counts the brief quotes, so drift is caught here too -- but only
+ * on the export they describe. On anybody else's data they are somebody else's
+ * numbers, and comparing against them would report a wall of failures about
+ * nothing. Checked against the imported profile below.
+ */
+const BRIEF_PROFILE = 'EbenVranken';
+
 const EXPECTED_DECADES: Record<string, number> = {
   'pre-1950': 0,
   '1950s': 8,
@@ -71,11 +78,22 @@ function main(): void {
   // --- decade, the hero visual ---------------------------------------------
   console.log('\nDecade  (all watched films, on the Letterboxd year)');
   const byDecade = new Map(coverage.decade.map((b) => [b.key, b.count]));
+  const profile = (
+    db.prepare('SELECT username FROM imports ORDER BY id DESC LIMIT 1').get() as
+      | { username: string | null }
+      | undefined
+  )?.username;
+  const isBriefProfile = profile === BRIEF_PROFILE;
+
   let decadesOk = true;
   for (const key of DECADE_ORDER) {
     const count = byDecade.get(key) ?? 0;
     const expected = EXPECTED_DECADES[key];
     const ok = expected === undefined || count === expected;
+    if (!isBriefProfile) {
+      console.log(`        ${key.padEnd(9)} ${String(count).padStart(4)}  ${bar(count, 3)}`);
+      continue;
+    }
     if (!ok) decadesOk = false;
     console.log(
       `  ${ok ? 'PASS' : 'FAIL'}  ${key.padEnd(9)} ${String(count).padStart(4)}  ${bar(count, 3)}`,

@@ -14,11 +14,11 @@ A personal blind-spot film picker. One user, no accounts, no auth, one page.
 
 ## Shape
 
-Ten build steps, all done: ingest a Letterboxd zip, enrich against TMDB,
+Eleven build steps, all done: ingest a Letterboxd zip, enrich against TMDB,
 compute coverage, build a candidate pool, draw the daily slate, show it, sync
-the RSS feed, chart the coverage, edit the lineage edges, and fold all of it
-onto a single page. `README.md` explains each one and, more usefully, what went
-wrong the first time.
+the RSS feed, chart the coverage, edit the lineage edges, fold all of it onto a
+single page, and make it set itself up for a stranger. `README.md` explains each
+one and, more usefully, what went wrong the first time.
 
 The day is a **slate of five films, and you choose one**. It used to be one
 film handed over with a skip button. The scoring did not change when that did:
@@ -35,6 +35,9 @@ you close and never whether you close one.
 - `src/app/page.tsx` is the entire UI. There is one route and no navigation;
   `_charts/`, `_slate/` and `_lineage/` are its private component folders.
 - `src/lib/analytics.ts` loads every number the page draws, in one pass.
+- `src/setup/pipeline.ts` runs import → enrich → coverage → pool as one job,
+  writing progress to `setup_runs`. The page's upload box and `npm run setup`
+  both call it.
 - `data/*.csv` are hand-curated and committed: overrides, movements, regions, lineage.
 
 ## Rules that matter
@@ -79,6 +82,17 @@ you close and never whether you close one.
   falls under 15 or a seeded region under 25. Canon, Criterion, regional and
   lineage entries are exempt from all of it. Every drop is logged in
   `pool_dropped`; every rescue in `pool_cap_overrides`.
+- **This has to work on an empty database.** The database is gitignored, so
+  anyone who clones this starts with nothing and no TMDB token. `appStatus()` in
+  `src/lib/status.ts` is the only thing the page may call before checking
+  readiness, and it never throws; everything else (`tmdbConfig`, `ensureSlate`,
+  `loadAnalytics`) throws on an empty install and is right to. If you add an
+  entry point, check readiness first.
+- **Do not hardcode this user's figures into a check.** `report.ts` and
+  `coverage.ts` compare against the brief only when the loaded profile is
+  `BRIEF_PROFILE`; on anyone else's export they print the numbers without a
+  verdict. A check that fails on a stranger's correct data is worse than no
+  check.
 - Run `npm run typecheck` before calling anything done. `npm run simulate --
   --chooser findable` is the check that matters after touching the engine: it
   models a reader who always takes the most-voted film on the slate, and

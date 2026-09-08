@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "setup": "tsx src/cli/setup.ts",
     "import": "tsx src/cli/import.ts",
     "enrich": "tsx src/cli/enrich.ts",
     "matches": "tsx src/cli/matches.ts",
