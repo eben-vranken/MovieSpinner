@@ -1,4 +1,5 @@
 import type { Db } from '../db/client';
+import { dayOf } from '../lib/day';
 import { decadeLabel } from '../coverage';
 import { loadCandidates, loadTaste } from './candidates';
 import type { Candidate, Taste } from './candidates';
@@ -578,6 +579,6 @@ export function resolvePick(
       `UPDATE picks SET status = ?, resolved_on = ?
        WHERE pick_date = ? AND round = ? AND status = 'pending'`,
     )
-    .run(status, new Date().toISOString().slice(0, 10), date, round).changes;
+    .run(status, dayOf(), date, round).changes;
   if (changed === 0) throw new Error(`No pending pick on ${date} round ${round}`);
 }

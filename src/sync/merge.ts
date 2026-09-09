@@ -1,4 +1,5 @@
 import type { Db } from '../db/client';
+import { dayOf } from '../lib/day';
 import { persistMovie } from '../ingest/enrich';
 import { TmdbClient } from '../tmdb/client';
 import type { TmdbMovieDetail } from '../tmdb/types';
@@ -47,7 +48,7 @@ export async function mergeWatched(db: Db, entries: RssEntry[], region: string):
   if (candidates.length === 0) return { ...EMPTY };
 
   const now = new Date().toISOString();
-  const today = now.slice(0, 10);
+  const today = dayOf();
   const failures: string[] = [];
 
   const findMatch = db.prepare('SELECT film_id AS filmId FROM film_matches WHERE tmdb_id = ?');

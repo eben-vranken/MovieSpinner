@@ -1,4 +1,5 @@
 import { migrate, openDb } from '../db/client';
+import { dayOf } from '../lib/day';
 import { loadMovements } from '../coverage';
 import { applyPick, createEngine, loadState, statureOf, DEFAULT_TUNING } from '../engine';
 import type { Candidate } from '../engine';
@@ -89,7 +90,7 @@ function main(): void {
 
   const days = Number.parseInt(arg('days', '365'), 10);
   const missRate = Number.parseFloat(arg('miss-rate', '0'));
-  const start = arg('start', new Date().toISOString().slice(0, 10));
+  const start = arg('start', dayOf());
   const chooser = arg('chooser', 'random') as Chooser;
   if (!['random', 'top', 'findable'].includes(chooser)) {
     console.log(`Unknown chooser "${chooser}". Use random, top or findable.`);

@@ -1,4 +1,5 @@
 import { migrate, openDb } from '../db/client';
+import { dayOf } from './day';
 import type { Db } from '../db/client';
 
 /**
@@ -23,4 +24,4 @@ export function db(): Db {
 // implementation moved to a database-free module the client bundle can import.
 export { posterUrl } from './poster';
 
-export const today = (): string => new Date().toISOString().slice(0, 10);
+export const today = (): string => dayOf();

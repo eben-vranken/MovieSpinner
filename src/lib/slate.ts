@@ -10,6 +10,8 @@ import { db, today } from './db';
 export interface FilmCard {
   position: number;
   tmdbId: number;
+  /** IMDb id, which is the id Stremio addresses a film by. Null on a few. */
+  imdbId: string | null;
   title: string;
   year: number | null;
   runtime: number | null;
@@ -88,6 +90,7 @@ interface SlateRow {
   reason_json: string;
   lineage_from: number | null;
   lineage_rationale: string | null;
+  imdb_id: string | null;
   title: string;
   year: number | null;
   runtime: number | null;
@@ -109,7 +112,7 @@ interface SlateRow {
 const SELECT_SLATE = `
   SELECT s.position, s.tmdb_id, s.kind, s.share, s.pool_size, s.reason_json,
          s.lineage_from, s.lineage_rationale, s.manual, s.campaign_id,
-         t.title, t.year, t.runtime, t.overview, t.poster_path, t.backdrop_path,
+         t.imdb_id, t.title, t.year, t.runtime, t.overview, t.poster_path, t.backdrop_path,
          t.origin_country, t.original_language, t.vote_average, t.vote_count,
          EXISTS (SELECT 1 FROM pool p WHERE p.tmdb_id = s.tmdb_id) AS in_pool,
          (SELECT e.position FROM pool_list_entries e
@@ -279,6 +282,7 @@ export function ensureSlate(date: string = today()): SlateView {
     return {
       position: row.position,
       tmdbId: row.tmdb_id,
+      imdbId: row.imdb_id,
       title: row.title,
       year: row.year,
       runtime: row.runtime,

@@ -4,6 +4,7 @@ import { createEngine, loadState } from '../engine';
 import { drawSlate, persistSlate } from '../engine/slate';
 import { loadLineage } from '../engine/lineage';
 import { tmdbConfig } from '../config';
+import { dayOf } from '../lib/day';
 import { mergeWatched } from './merge';
 import type { MergeResult } from './merge';
 import { fetchFeed } from './rss';
@@ -38,7 +39,7 @@ export async function sync(
   username: string,
   options: { date?: string; generate?: boolean } = {},
 ): Promise<SyncResult> {
-  const date = options.date ?? new Date().toISOString().slice(0, 10);
+  const date = options.date ?? dayOf();
   const feed = await fetchFeed(username);
   const now = new Date().toISOString();
 

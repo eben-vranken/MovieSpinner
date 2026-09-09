@@ -147,6 +147,14 @@ function ChoiceCard({
             {film.genres.slice(0, 3).join(', ')}
           </p>
         ) : null}
+        {/* In the accent rather than muted like the two lines above it: the
+            movement is the dimension the draw is actually scored on, so on a
+            card explaining why this film is here it is not just more metadata. */}
+        {film.movements.length > 0 ? (
+          <p className="mt-1 truncate text-xs text-accent" title={film.movements.join(', ')}>
+            {film.movements.slice(0, 2).join(' · ')}
+          </p>
+        ) : null}
 
         <div className="mt-2 flex-1">
           <Provenance film={film} />
@@ -185,6 +193,35 @@ function ChoiceCard({
         </button>
       </form>
     </div>
+  );
+}
+
+/**
+ * Opens the film in the Stremio desktop app.
+ *
+ * `stremio:///detail/movie/<imdb>/<imdb>` is Stremio's own deep-link format.
+ * The desktop app registers the `stremio:` protocol on install, so the browser
+ * hands the URL to it on a click; the first click asks for permission, like
+ * any protocol handler. No target, because this is not a navigation -- opening
+ * a blank tab beside the launched app is the classic way to get this wrong.
+ *
+ * It lands on the film's page rather than starting playback: `autoPlay` is
+ * Android TV only, and picking a stream is not this app's business anyway.
+ *
+ * Hidden when TMDB carries no IMDb id, which is the only handle Stremio has on
+ * a film. That is two films out of the pool's four and a half thousand.
+ */
+function StremioLink({ film }: { film: FilmCard }) {
+  if (!film.imdbId) return null;
+
+  return (
+    <a
+      href={`stremio:///detail/movie/${film.imdbId}/${film.imdbId}`}
+      className="rounded border border-edge px-3 py-1.5 text-xs text-muted transition hover:border-accent hover:text-accent"
+      title="Opens the Stremio desktop app on this film"
+    >
+      Open in Stremio
+    </a>
   );
 }
 
@@ -243,6 +280,7 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
           {slate.chosen?.status === 'watched' ? (
             <>
               <p className="text-sm text-accent">Watched.</p>
+              <StremioLink film={film} />
               <form action={undoWatched.bind(null, slate.date, slate.round)}>
                 <button
                   type="submit"
@@ -262,6 +300,7 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
                   Watched it
                 </button>
               </form>
+              <StremioLink film={film} />
               <span className="max-w-sm text-xs leading-relaxed text-muted">
                 Chosen for today. The other four are gone until they come up again — and marking
                 this watched earns another five, if the evening has room.

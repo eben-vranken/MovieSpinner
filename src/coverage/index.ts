@@ -2,6 +2,7 @@ import { parse } from 'csv-parse/sync';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from '../db/client';
+import { dayOf } from '../lib/day';
 
 /**
  * Build step 3: what my coverage actually looks like across decade, country,
@@ -389,7 +390,7 @@ export function computeCoverage(db: Db): Coverage {
  * dashboard does.
  */
 export function snapshotCoverage(db: Db, coverage: Coverage, on = new Date()): string {
-  const takenOn = on.toISOString().slice(0, 10);
+  const takenOn = dayOf(on);
 
   db.transaction(() => {
     db.prepare('DELETE FROM coverage_snapshots WHERE taken_on = ?').run(takenOn);

@@ -1,4 +1,5 @@
 import { migrate, openDb } from '../db/client';
+import { dayOf } from '../lib/day';
 import { loadMovements } from '../coverage';
 import { createEngine, loadState, resolvePick, unresolvePick } from '../engine';
 import { chooseFromSlate } from '../engine/choose';
@@ -77,7 +78,7 @@ function main(): void {
   loadMovements(db);
   loadLineage(db);
 
-  const date = arg('date', new Date().toISOString().slice(0, 10));
+  const date = arg('date', dayOf());
 
   if (process.argv.includes('--campaigns')) {
     const kind = (arg('campaigns', 'director') as CampaignKind) ?? 'director';
