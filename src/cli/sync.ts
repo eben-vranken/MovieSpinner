@@ -26,6 +26,13 @@ async function main(): Promise<void> {
   const result = await sync(db, username, { generate: !process.argv.includes('--no-generate') });
 
   console.log(`Read ${result.entries} entries from ${username}'s feed, ${result.newEntries} new.`);
+  if (result.merge.watchedAdded > 0 || result.merge.filmsBackfilled > 0) {
+    console.log(
+      `  merged ${result.merge.watchedAdded} newly watched (${result.merge.filmsBackfilled} backfilled from TMDB, ` +
+        `${result.merge.ratingsAdded} ratings, ${result.merge.poolExcluded} dropped from the pool).`,
+    );
+  }
+  for (const failure of result.merge.failures) console.log(`  merge failed: ${failure}`);
   if (result.resolved.length === 0) {
     console.log('No pending pick matched anything in the feed.');
   } else {

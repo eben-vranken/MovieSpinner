@@ -47,6 +47,8 @@ export interface Analytics {
     poolSize: number;
     watchlist: number;
     daysPlayed: number;
+    /** Slates drawn. More than `daysPlayed` once a day has held two films. */
+    roundsPlayed: number;
     filmsOffered: number;
     chosen: number;
     watchedFromSlate: number;
@@ -93,17 +95,26 @@ export interface Analytics {
   snapshots: { takenOn: string; watched: number }[];
   slateLog: {
     date: string;
+    /** Which of the day's rounds. 1 unless you watched one and asked for more. */
+    round: number;
     kind: string;
     films: {
       tmdbId: number;
       title: string;
       year: number | null;
+      posterPath: string | null;
       chosen: boolean;
       manual: boolean;
     }[];
     status: string | null;
   }[];
-  passedOver: { tmdbId: number; title: string; year: number | null; times: number }[];
+  passedOver: {
+    tmdbId: number;
+    title: string;
+    year: number | null;
+    posterPath: string | null;
+    times: number;
+  }[];
   lineage: {
     fromTmdbId: number;
     toTmdbId: number;
@@ -464,47 +475,69 @@ export function loadAnalytics(): Analytics {
   // --- the slate log --------------------------------------------------------
   const slateRows = rows<{
     slate_date: string;
+    round: number;
     kind: string;
     tmdb_id: number;
     title: string;
     year: number | null;
+    poster_path: string | null;
     chosen: number;
     manual: number;
     status: string | null;
   }>(
-    `SELECT s.slate_date, s.kind, s.tmdb_id, t.title, t.year, s.manual,
+    // The join stays on (date, film) rather than (date, round, film): a film is
+    // offered at most once a day, so it already identifies one slate row, and
+    // the pick row is the one that settled whichever round held it.
+    `SELECT s.slate_date, s.round, s.kind, s.tmdb_id, t.title, t.year, t.poster_path, s.manual,
             (pk.tmdb_id IS NOT NULL) AS chosen, pk.status
      FROM slates s
      JOIN tmdb_films t ON t.tmdb_id = s.tmdb_id
      LEFT JOIN picks pk ON pk.pick_date = s.slate_date AND pk.tmdb_id = s.tmdb_id
-     ORDER BY s.slate_date DESC, s.position`,
+     ORDER BY s.slate_date DESC, s.round, s.position`,
   );
 
+  // Grouped by round rather than by date, so a double bill reads as two slates
+  // on one date instead of ten films in one row with two of them chosen.
   const slateLog: Analytics['slateLog'] = [];
   for (const row of slateRows) {
-    let day = slateLog.find((entry) => entry.date === row.slate_date);
+    let day = slateLog.find(
+      (entry) => entry.date === row.slate_date && entry.round === row.round,
+    );
     if (!day) {
-      day = { date: row.slate_date, kind: row.kind, films: [], status: null };
+      day = { date: row.slate_date, round: row.round, kind: row.kind, films: [], status: null };
       slateLog.push(day);
     }
     day.films.push({
       tmdbId: row.tmdb_id,
       title: row.title,
       year: row.year,
+      posterPath: row.poster_path,
       chosen: row.chosen === 1,
       manual: row.manual === 1,
     });
     if (row.chosen === 1) day.status = row.status;
   }
 
-  const passedOver = rows<{ tmdb_id: number; title: string; year: number | null; times: number }>(
-    `SELECT s.tmdb_id, t.title, t.year, COUNT(*) AS times
+  const passedOver = rows<{
+    tmdb_id: number;
+    title: string;
+    year: number | null;
+    poster_path: string | null;
+    times: number;
+  }>(
+    `SELECT s.tmdb_id, t.title, t.year, t.poster_path, COUNT(*) AS times
      FROM slates s JOIN tmdb_films t ON t.tmdb_id = s.tmdb_id
      WHERE NOT EXISTS (SELECT 1 FROM picks pk
                        WHERE pk.pick_date = s.slate_date AND pk.tmdb_id = s.tmdb_id)
      GROUP BY s.tmdb_id HAVING times > 1
      ORDER BY times DESC, t.title LIMIT 12`,
-  ).map((row) => ({ tmdbId: row.tmdb_id, title: row.title, year: row.year, times: row.times }));
+  ).map((row) => ({
+    tmdbId: row.tmdb_id,
+    title: row.title,
+    year: row.year,
+    posterPath: row.poster_path,
+    times: row.times,
+  }));
 
   // --- lineage --------------------------------------------------------------
   const lineage = rows<{
@@ -549,6 +582,9 @@ export function loadAnalytics(): Analytics {
       poolSize: poolTotal,
       watchlist: scalar('SELECT COUNT(*) AS n FROM watchlist'),
       daysPlayed: scalar('SELECT COUNT(DISTINCT slate_date) AS n FROM slates'),
+      roundsPlayed: scalar(
+        'SELECT COUNT(*) AS n FROM (SELECT 1 FROM slates GROUP BY slate_date, round)',
+      ),
       filmsOffered: scalar('SELECT COUNT(*) AS n FROM slates'),
       chosen: scalar('SELECT COUNT(*) AS n FROM picks'),
       watchedFromSlate: scalar("SELECT COUNT(*) AS n FROM picks WHERE status = 'watched'"),

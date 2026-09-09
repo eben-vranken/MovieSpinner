@@ -26,25 +26,14 @@ export interface RedrawResult {
  * The superseded row is copied into `pick_redraws` in the same transaction, so
  * the history says what changed instead of quietly showing a different film
  * than it did yesterday.
+ *
+ * The replacement decides the round. Its slate row says which round it was
+ * offered in, and that is the round being repaired -- so a stale film in round
+ * 1 of a two-round day can only be swapped for one of round 1's other four.
+ * Taking the caller's word for the round would let a film from this evening
+ * quietly replace the one from this afternoon.
  */
 export function rechooseStalePick(db: Db, date: string, tmdbId: number): RedrawResult {
-  const existing = db
-    .prepare(
-      `SELECT p.tmdb_id, p.status, t.title FROM picks p
-       JOIN tmdb_films t ON t.tmdb_id = p.tmdb_id WHERE p.pick_date = ?`,
-    )
-    .get(date) as { tmdb_id: number; status: string; title: string } | undefined;
-
-  if (!existing) throw new Error(`There is no pick on ${date} to replace.`);
-  if (!isPickStale(db, date)) {
-    throw new Error(
-      `${existing.title} is still in the pool, so ${date} is not stale. There is no reroll.`,
-    );
-  }
-  if (tmdbId === existing.tmdb_id) {
-    throw new Error(`${existing.title} is the film that went stale. Choose a different one.`);
-  }
-
   const replacement = db
     .prepare(
       `SELECT s.*, t.title,
@@ -55,6 +44,7 @@ export function rechooseStalePick(db: Db, date: string, tmdbId: number): RedrawR
     .get(date, tmdbId) as
     | {
         tmdb_id: number;
+        round: number;
         kind: PickKind;
         seed: string;
         weight: number;
@@ -76,14 +66,33 @@ export function rechooseStalePick(db: Db, date: string, tmdbId: number): RedrawR
     throw new Error(`${replacement.title} is not in the pool either.`);
   }
 
+  const round = replacement.round;
+  const existing = db
+    .prepare(
+      `SELECT p.tmdb_id, p.status, t.title FROM picks p
+       JOIN tmdb_films t ON t.tmdb_id = p.tmdb_id WHERE p.pick_date = ? AND p.round = ?`,
+    )
+    .get(date, round) as { tmdb_id: number; status: string; title: string } | undefined;
+
+  if (!existing) throw new Error(`There is no pick on ${date} round ${round} to replace.`);
+  if (!isPickStale(db, date, round)) {
+    throw new Error(
+      `${existing.title} is still in the pool, so ${date} is not stale. There is no reroll.`,
+    );
+  }
+  if (tmdbId === existing.tmdb_id) {
+    throw new Error(`${existing.title} is the film that went stale. Choose a different one.`);
+  }
+
   return db.transaction(() => {
     // The old row has to go before the insert, or persistPickRecord would
     // refuse the replacement -- which is exactly what it should do everywhere
     // except right here.
-    db.prepare('DELETE FROM picks WHERE pick_date = ?').run(date);
+    db.prepare('DELETE FROM picks WHERE pick_date = ? AND round = ?').run(date, round);
 
     persistPickRecord(db, {
       date,
+      round,
       tmdbId: replacement.tmdb_id,
       kind: replacement.kind,
       seed: replacement.seed,
@@ -98,10 +107,12 @@ export function rechooseStalePick(db: Db, date: string, tmdbId: number): RedrawR
 
     db.prepare(
       `INSERT INTO pick_redraws
-         (pick_date, old_tmdb_id, old_title, old_status, new_tmdb_id, new_title, reason, redrawn_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (pick_date, round, old_tmdb_id, old_title, old_status, new_tmdb_id, new_title,
+          reason, redrawn_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       date,
+      round,
       existing.tmdb_id,
       existing.title,
       existing.status,

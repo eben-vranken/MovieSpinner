@@ -9,7 +9,9 @@ import type { TmdbSearchResult } from './types';
  * `near` lands in the review queue instead of the database.
  */
 
-export type MatchMethod = 'override' | 'exact' | 'near' | 'fuzzy' | 'unmatched';
+// 'rss' is a certain match too, just resolved from the Letterboxd feed's own
+// tmdb:movieId rather than a title/year search -- see src/sync/merge.ts.
+export type MatchMethod = 'override' | 'exact' | 'near' | 'fuzzy' | 'unmatched' | 'rss';
 
 export interface ScoredCandidate {
   tmdbId: number;
@@ -20,7 +22,8 @@ export interface ScoredCandidate {
   yearDelta: number | null;
   /** TMDB vote count, used as a notability signal when titles collide. */
   votes: number;
-  method: Exclude<MatchMethod, 'override' | 'unmatched'>;
+  // 'rss' is never produced by this file's own ranking -- see src/sync/merge.ts.
+  method: Exclude<MatchMethod, 'override' | 'unmatched' | 'rss'>;
 }
 
 /**

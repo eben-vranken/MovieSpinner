@@ -339,21 +339,29 @@ function main(): void {
     // Slates and picks are separate counts on purpose: a day the cron prepared
     // and nobody opened has five films and no pick, which is not a failure.
     const slateDays = scalar('SELECT COUNT(DISTINCT slate_date) AS n FROM slates');
+    const rounds = scalar(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM slates GROUP BY slate_date, round)',
+    );
     const offered = scalar('SELECT COUNT(*) AS n FROM slates');
     console.log(
-      `        slates drawn         ${slateDays} day(s), ${offered} film(s) offered`,
+      `        slates drawn         ${slateDays} day(s), ${rounds} round(s), ` +
+        `${offered} film(s) offered`,
     );
     // A short slate is legal -- the draw stops early rather than padding when
     // nothing left has any weight -- but it should be rare enough to notice.
     // Days carried over from the one-a-day era are one film by design.
+    //
+    // Counted per round rather than per day: a day you watched two films on
+    // holds ten offers and is two full slates, not one broken one.
     const shortSlates = scalar(
-      'SELECT COUNT(*) AS n FROM (SELECT slate_date FROM slates GROUP BY slate_date HAVING COUNT(*) <> ?)',
+      `SELECT COUNT(*) AS n FROM
+         (SELECT slate_date FROM slates GROUP BY slate_date, round HAVING COUNT(*) <> ?)`,
       DEFAULT_TUNING.slateSize,
     );
     if (slateDays > 0) {
       console.log(
         `        slates of ${DEFAULT_TUNING.slateSize}           ` +
-          `${slateDays - shortSlates} of ${slateDays} day(s)`,
+          `${rounds - shortSlates} of ${rounds} round(s)`,
       );
     }
     if (picked === 0) {
@@ -369,6 +377,19 @@ function main(): void {
         'SELECT COUNT(*) AS n FROM (SELECT tmdb_id FROM picks GROUP BY tmdb_id HAVING COUNT(*) > 1)',
       );
       console.log(`  ${dupes === 0 ? 'PASS' : 'FAIL'}  no film picked twice     ${dupes} duplicate(s)`);
+
+      // A round that exists at all was earned by the one before it being
+      // watched, so an unwatched pick with a later round on the same day means
+      // something reached past the guard in `drawNextRound`.
+      const unearned = scalar(
+        `SELECT COUNT(*) AS n FROM picks p
+         WHERE p.status <> 'watched'
+           AND EXISTS (SELECT 1 FROM picks later
+                       WHERE later.pick_date = p.pick_date AND later.round > p.round)`,
+      );
+      console.log(
+        `  ${unearned === 0 ? 'PASS' : 'FAIL'}  every round earned       ${unearned} unwatched`,
+      );
     }
   }
 

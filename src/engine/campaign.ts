@@ -1,7 +1,7 @@
 import type { Db } from '../db/client';
 import { scoreAll } from './index';
 import type { Engine, EngineState, Scored } from './index';
-import type { SlateResult } from './slate';
+import type { DrawOptions, SlateResult } from './slate';
 
 /**
  * Campaign mode: the daily five, but in order, on one subject.
@@ -124,9 +124,17 @@ export function drawCampaignSlate(
   state: EngineState,
   date: string,
   campaign: Campaign,
-  size: number = engine.tuning.slateSize,
+  { round = 1, size = engine.tuning.slateSize, exclude }: DrawOptions = {},
 ): SlateResult {
-  const queue = campaignQueue(engine, state, date, campaign);
+  const all = campaignQueue(engine, state, date, campaign);
+  // A later round on the same day carries on down the queue rather than
+  // re-offering the four you did not take this morning. In a campaign that is
+  // not a nicety: the queue is the argument, and showing its first five twice
+  // in one day would stall the very thing a campaign is for.
+  const queue =
+    exclude && exclude.size > 0
+      ? all.filter((entry) => !exclude.has(entry.candidate.tmdbId))
+      : all;
   if (queue.length === 0) {
     throw new Error(`The ${campaign.label} campaign has no films left.`);
   }
@@ -137,12 +145,18 @@ export function drawCampaignSlate(
 
   return {
     date,
+    round,
     // A campaign day is still blind-spot work, and it suspends the junk valve:
     // Sunday off is a release valve for homework you did not choose, and this
     // is homework you did.
     kind: 'blind-spot',
     // No PRNG involved, so the seed records what actually selected these films.
-    seed: `moviespinner:campaign:${campaign.id}:${date}`,
+    seed: `moviespinner:campaign:${campaign.id}:${date}${round > 1 ? `:r${round}` : ''}`,
+    // Written onto every row of the slate. Without it `slates.campaign_id` stays
+    // null, the page cannot tell a campaign slate from an ordinary one, and the
+    // progress panel -- which counts taken films by joining on this -- reads
+    // zero however many you have watched.
+    campaignId: campaign.id,
     entries: queue.slice(0, size).map((entry, position) => ({
       position,
       scored: entry,

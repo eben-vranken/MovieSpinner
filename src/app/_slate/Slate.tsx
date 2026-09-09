@@ -1,9 +1,10 @@
 import Image from 'next/image';
 import { chooseFilm, markWatched, rechooseFilm, undoWatched } from '../actions';
 import { LockIn } from './LockIn';
+import { NextRound } from './NextRound';
 import { posterUrl } from '../../lib/db';
 import { reasonSentence } from '../../lib/slate';
-import type { FilmCard, SlateView } from '../../lib/slate';
+import type { EarlierPick, FilmCard, SlateView } from '../../lib/slate';
 import type { CampaignView } from '../../lib/campaign';
 
 /**
@@ -11,10 +12,15 @@ import type { CampaignView } from '../../lib/campaign';
  *
  * The interaction is a single click and it is final. There is no confirm step,
  * because a confirm would imply the choice is reversible and it is not -- the
- * five are drawn once for the day and choosing one closes the day. What the
+ * five are drawn once for the round and choosing one closes the round. What the
  * card owes you in exchange is enough information to choose without clicking:
  * who made it, where it is from, how long it is, why the engine put it in front
  * of you, and whether you can actually watch it tonight.
+ *
+ * A day can now hold more than one of these. Watching the film you chose earns
+ * another five, which is a different thing from being handed another five --
+ * the round you finished stays finished, its film stays chosen, and the strip
+ * of what you have already watched today sits above the new slate saying so.
  *
  * Underneath the five sits the manual override, folded away until asked for.
  * The five are the recommendation, so they get the space; searching the pool
@@ -115,10 +121,15 @@ function ChoiceCard({
   const runtime = film.runtime ? `${film.runtime}m` : '?';
 
   return (
-    <form action={action.bind(null, slate.date, film.tmdbId)} className="contents">
-      <button
-        type="submit"
-        className="group flex flex-col rounded-lg border border-edge bg-panel p-3 text-left transition hover:border-accent focus:border-accent focus:outline-none"
+    <div className="group flex flex-col rounded-lg border border-edge bg-panel p-3 transition hover:border-accent">
+      {/* The card itself is a link out to TMDB -- looking a film up is not a
+          decision, so it should not share a click target with the one action
+          on this card that is. */}
+      <a
+        href={`https://www.themoviedb.org/movie/${film.tmdbId}`}
+        target="_blank"
+        rel="noreferrer"
+        className="flex flex-1 flex-col text-left"
       >
         <Poster film={film} size="w342" priority={film.position < 3} />
 
@@ -131,6 +142,11 @@ function ChoiceCard({
         <p className="mt-1 truncate text-xs text-muted" title={film.directors.join(', ')}>
           {film.directors.join(', ') || 'Director unknown'}
         </p>
+        {film.genres.length > 0 ? (
+          <p className="mt-1 truncate text-xs text-muted" title={film.genres.join(', ')}>
+            {film.genres.slice(0, 3).join(', ')}
+          </p>
+        ) : null}
 
         <div className="mt-2 flex-1">
           <Provenance film={film} />
@@ -158,12 +174,17 @@ function ChoiceCard({
               : ''}
           </p>
         </div>
+      </a>
 
-        <span className="mt-3 rounded border border-edge px-3 py-1.5 text-center text-xs text-muted group-hover:border-accent group-hover:text-accent">
+      <form action={action.bind(null, slate.date, film.tmdbId)}>
+        <button
+          type="submit"
+          className="mt-3 w-full rounded border border-edge px-3 py-1.5 text-center text-xs text-muted transition hover:border-accent hover:text-accent"
+        >
           Choose this
-        </span>
-      </button>
-    </form>
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -222,7 +243,7 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
           {slate.chosen?.status === 'watched' ? (
             <>
               <p className="text-sm text-accent">Watched.</p>
-              <form action={undoWatched.bind(null, slate.date)}>
+              <form action={undoWatched.bind(null, slate.date, slate.round)}>
                 <button
                   type="submit"
                   className="rounded border border-edge px-3 py-1 text-xs text-muted hover:text-paper"
@@ -233,7 +254,7 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
             </>
           ) : (
             <>
-              <form action={markWatched.bind(null, slate.date)}>
+              <form action={markWatched.bind(null, slate.date, slate.round)}>
                 <button
                   type="submit"
                   className="rounded bg-accent px-4 py-2 text-sm font-medium text-ink hover:opacity-90"
@@ -241,8 +262,9 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
                   Watched it
                 </button>
               </form>
-              <span className="text-xs text-muted">
-                Chosen for today. The other four are gone until they come up again.
+              <span className="max-w-sm text-xs leading-relaxed text-muted">
+                Chosen for today. The other four are gone until they come up again — and marking
+                this watched earns another five, if the evening has room.
               </span>
             </>
           )}
@@ -264,6 +286,52 @@ function Chosen({ film, slate }: { film: FilmCard; slate: SlateView }) {
         </p>
       </div>
     </article>
+  );
+}
+
+/**
+ * What you have already watched today.
+ *
+ * Only appears on a day that has had more than one round, and it is the thing
+ * that makes a second slate legible: without it, arriving on round 2 looks
+ * exactly like arriving on a fresh day with a different five, which is the
+ * misreading the whole no-reroll rule exists to prevent.
+ */
+function EarlierToday({ picks }: { picks: EarlierPick[] }) {
+  if (picks.length === 0) return null;
+
+  return (
+    <div className="mb-5 rounded-lg border border-edge bg-panel/40 p-4">
+      <p className="text-xs tracking-[0.18em] text-muted uppercase">
+        Already watched today · {picks.length}
+      </p>
+      <ul className="mt-3 flex flex-wrap gap-4">
+        {picks.map((pick) => {
+          const poster = posterUrl(pick.posterPath, 'w92');
+          return (
+            <li key={pick.tmdbId} className="flex items-center gap-3">
+              {poster ? (
+                <img
+                  src={poster}
+                  alt=""
+                  width={46}
+                  height={69}
+                  className="h-[69px] w-[46px] rounded object-cover"
+                />
+              ) : null}
+              <span className="text-xs">
+                <span className="text-muted">Round {pick.round}</span>
+                <br />
+                <span className="text-paper">{pick.title}</span>{' '}
+                <span className="text-muted">({pick.year ?? '?'})</span>
+                <br />
+                <span className="text-muted">{pick.directors[0] ?? 'Director unknown'}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -301,10 +369,13 @@ export function Slate({ slate, campaign }: { slate: SlateView; campaign: Campaig
 
   return (
     <section>
+      <EarlierToday picks={slate.earlier} />
+
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
           <h2 className="text-xs tracking-[0.2em] text-muted uppercase">
             {slate.date}
+            {slate.round > 1 ? ` · round ${slate.round}` : ''}
             {onCampaign
               ? ` · ${campaign.campaign.label} campaign`
               : slate.kind === 'junk-valve'
@@ -313,12 +384,18 @@ export function Slate({ slate, campaign }: { slate: SlateView; campaign: Campaig
           </h2>
           <p className="mt-1 text-sm text-muted">
             {chosen && !slate.chosenIsStale
-              ? onCampaign
-                ? `Chosen. ${campaign.remaining} left in the campaign.`
-                : 'Chosen. Tomorrow brings five more.'
+              ? slate.chosen?.status === 'watched'
+                ? onCampaign
+                  ? `Watched. ${campaign.remaining} left in the campaign, and the evening can hold another.`
+                  : 'Watched. Another five if the evening has room, otherwise tomorrow.'
+                : onCampaign
+                  ? `Chosen. ${campaign.remaining} left in the campaign.`
+                  : 'Chosen. Mark it watched when the evening is done.'
               : onCampaign
-                ? `The next ${slate.films.length} of ${campaign.campaign.label}, in ${campaign.campaign.ordering === 'chronological' ? 'release' : 'canonical'} order. Pick one — the choice is final for today.`
-                : `Five films, weighted at the gaps in your coverage. Pick one — the choice is final for today.`}
+                ? `The next ${slate.films.length} of ${campaign.campaign.label}, in ${campaign.campaign.ordering === 'chronological' ? 'release' : 'canonical'} order. Pick one — the choice is final for this round.`
+                : slate.round > 1
+                  ? `Five more, weighted at the gaps you have left after tonight's first film. Pick one — the choice is final for this round.`
+                  : `Five films, weighted at the gaps in your coverage. Pick one — the choice is final for this round.`}
           </p>
         </div>
         {slate.streak > 0 ? (
@@ -348,6 +425,9 @@ export function Slate({ slate, campaign }: { slate: SlateView; campaign: Campaig
           <>
             <Chosen film={chosen} slate={slate} />
             <PassedOver films={slate.films.filter((film) => film.tmdbId !== chosen.tmdbId)} />
+            {/* Only once it is watched. The server refuses otherwise, and a
+                button that sometimes works teaches the rule wrongly. */}
+            {slate.canDrawAnother ? <NextRound date={slate.date} round={slate.round} /> : null}
           </>
         ) : (
           <>

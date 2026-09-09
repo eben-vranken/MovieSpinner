@@ -5,7 +5,7 @@ import { chooseFromSlate } from '../engine/choose';
 import { lockInFilm } from '../engine/lock';
 import { activeCampaign, campaignQueue, endCampaign, startCampaign } from '../engine/campaign';
 import type { CampaignKind, CampaignOrdering } from '../engine/campaign';
-import { drawSlate, persistSlate } from '../engine/slate';
+import { currentRound, drawSlate, offeredOn, persistSlate } from '../engine/slate';
 import { rechooseStalePick } from '../engine/redraw';
 import { loadLineage } from '../engine/lineage';
 import { tmdbConfig } from '../config';
@@ -19,11 +19,13 @@ import { tmdbConfig } from '../config';
  * else in this project got checked.
  *
  * Usage:
- *   npm run slate                      # show today's five, drawing them if needed
- *   npm run slate -- --choose 1234     # commit to a tmdb_id from today's slate
+ *   npm run slate                      # show the current round, drawing it if needed
+ *   npm run slate -- --choose 1234     # commit to a tmdb_id from the current round
  *   npm run slate -- --find solaris    # search the pool by title
  *   npm run slate -- --lock 593        # lock in any pool film, on or off the slate
  *   npm run slate -- --watched         # mark the chosen film watched
+ *   npm run slate -- --again           # another five, once this round is watched
+ *   npm run slate -- --round 1         # look back at an earlier round of the day
  *   npm run slate -- --undo            # put a mis-clicked watched back to pending
  *   npm run slate -- --rechoose 1234   # replace a pick stranded by a pool rebuild
  *   npm run slate -- --date 2026-09-10
@@ -44,6 +46,7 @@ const arg = (name: string, fallback: string): string => {
 
 interface Offer {
   position: number;
+  round: number;
   tmdb_id: number;
   kind: string;
   share: number;
@@ -59,13 +62,13 @@ interface Offer {
 }
 
 const SELECT = `
-  SELECT s.position, s.tmdb_id, s.kind, s.share, s.pool_size, s.reason_json, s.lineage_rationale,
-         t.title, t.year, t.runtime, t.overview, t.origin_country,
+  SELECT s.position, s.round, s.tmdb_id, s.kind, s.share, s.pool_size, s.reason_json,
+         s.lineage_rationale, t.title, t.year, t.runtime, t.overview, t.origin_country,
          (pk.tmdb_id IS NOT NULL) AS chosen
   FROM slates s
   JOIN tmdb_films t ON t.tmdb_id = s.tmdb_id
   LEFT JOIN picks pk ON pk.pick_date = s.slate_date AND pk.tmdb_id = s.tmdb_id
-  WHERE s.slate_date = ? ORDER BY s.position`;
+  WHERE s.slate_date = ? AND s.round = ? ORDER BY s.position`;
 
 function main(): void {
   const { region } = tmdbConfig();
@@ -189,16 +192,18 @@ function main(): void {
     const limit = Number.parseInt(arg('history', '14'), 10);
     const rows = db
       .prepare(
-        `SELECT s.slate_date, s.kind, t.title, t.year, (pk.tmdb_id IS NOT NULL) AS chosen, pk.status
+        `SELECT s.slate_date, s.round, s.kind, t.title, t.year,
+                (pk.tmdb_id IS NOT NULL) AS chosen, pk.status
          FROM slates s
          JOIN tmdb_films t ON t.tmdb_id = s.tmdb_id
          LEFT JOIN picks pk ON pk.pick_date = s.slate_date AND pk.tmdb_id = s.tmdb_id
          WHERE s.slate_date IN (SELECT DISTINCT slate_date FROM slates
                                 ORDER BY slate_date DESC LIMIT ?)
-         ORDER BY s.slate_date DESC, s.position`,
+         ORDER BY s.slate_date DESC, s.round, s.position`,
       )
       .all(limit) as {
       slate_date: string;
+      round: number;
       kind: string;
       title: string;
       year: number | null;
@@ -209,9 +214,13 @@ function main(): void {
     if (rows.length === 0) console.log('No slates yet.');
     let current = '';
     for (const row of rows) {
-      if (row.slate_date !== current) {
-        current = row.slate_date;
-        console.log(`\n  ${current}${row.kind === 'junk-valve' ? '  (junk valve)' : ''}`);
+      const heading = `${row.slate_date}#${row.round}`;
+      if (heading !== current) {
+        current = heading;
+        console.log(
+          `\n  ${row.slate_date}${row.round > 1 ? `  round ${row.round}` : ''}` +
+            `${row.kind === 'junk-valve' ? '  (junk valve)' : ''}`,
+        );
       }
       const mark = row.chosen === 1 ? `> ${row.status ?? 'pending'}`.padEnd(10) : '  '.padEnd(10);
       console.log(`    ${mark}${row.title} (${row.year ?? '?'})`);
@@ -276,23 +285,73 @@ function main(): void {
     return;
   }
 
+  // Which round the day is on. Every verb below acts on that one unless
+  // --round names an earlier one, because the round you are being asked to
+  // choose from is the only one with anything open.
+  const drawn = currentRound(db, date);
+  const round = Math.max(1, Number.parseInt(arg('round', String(Math.max(1, drawn))), 10) || 1);
+
   if (process.argv.includes('--undo')) {
-    unresolvePick(db, date);
-    console.log(`${date} is pending again. The film is unchanged; only the bookkeeping was undone.`);
+    unresolvePick(db, date, round);
+    console.log(
+      `${date} round ${round} is pending again. ` +
+        'The film is unchanged; only the bookkeeping was undone.',
+    );
     db.close();
     return;
   }
 
   if (process.argv.includes('--watched')) {
-    resolvePick(db, date, 'watched');
-    console.log('Marked watched.');
+    resolvePick(db, date, 'watched', round);
+    console.log('Marked watched. Another five with:  npm run slate -- --again');
     db.close();
     return;
   }
 
-  // The slate is generated on first read, exactly as the page does it.
-  let offers = db.prepare(SELECT).all(date) as Offer[];
-  if (offers.length === 0) {
+  // Another five, and the guard that makes it not a reroll: the round before it
+  // has to have been watched, not merely chosen.
+  if (process.argv.includes('--again')) {
+    if (drawn === 0) {
+      console.log(`${date} has no slate yet. Run npm run slate first.`);
+      db.close();
+      return;
+    }
+    const pick = db
+      .prepare('SELECT status FROM picks WHERE pick_date = ? AND round = ?')
+      .get(date, drawn) as { status: string } | undefined;
+
+    if (!pick) {
+      console.log(`Round ${drawn} is still open. Choose one of its films first.`);
+      db.close();
+      return;
+    }
+    if (pick.status !== 'watched') {
+      console.log(
+        'Mark the film you chose as watched first. Another round is what watching one earns;' +
+          ' it is not a way to be handed a different five.',
+      );
+      db.close();
+      return;
+    }
+
+    const engine = createEngine(db);
+    persistSlate(
+      db,
+      drawSlate(engine, loadState(db), date, {
+        round: drawn + 1,
+        exclude: offeredOn(db, date),
+      }),
+    );
+    console.log(`Round ${drawn + 1} drawn. Show it with:  npm run slate`);
+    db.close();
+    return;
+  }
+
+  // The slate is generated on first read, exactly as the page does it -- round
+  // 1 and no further. Later rounds are earned through --again rather than
+  // conjured by looking, or the day would deal itself a new five every time.
+  let offers = db.prepare(SELECT).all(date, round) as Offer[];
+  if (offers.length === 0 && drawn === 0) {
     const engine = createEngine(db);
     if (engine.candidates.length === 0) {
       console.log('The candidate pool is empty. Run: npm run pool');
@@ -300,7 +359,12 @@ function main(): void {
       return;
     }
     persistSlate(db, drawSlate(engine, loadState(db), date));
-    offers = db.prepare(SELECT).all(date) as Offer[];
+    offers = db.prepare(SELECT).all(date, 1) as Offer[];
+  }
+  if (offers.length === 0) {
+    console.log(`${date} has no round ${round}.`);
+    db.close();
+    return;
   }
 
   // Deliberately after the slate is drawn. Locking in without one would leave a
@@ -327,7 +391,8 @@ function main(): void {
 
   const first = offers[0];
   console.log(
-    `\n  ${date}${first?.kind === 'junk-valve' ? '   (junk valve: today is not homework)' : ''}` +
+    `\n  ${date}${first && first.round > 1 ? `   round ${first.round}` : ''}` +
+      `${first?.kind === 'junk-valve' ? '   (junk valve: today is not homework)' : ''}` +
       `   ${offers.length} of ${first?.pool_size ?? 0} candidates`,
   );
 
@@ -376,10 +441,19 @@ function main(): void {
   }
 
   const chosen = offers.find((offer) => offer.chosen === 1);
+  const status = chosen
+    ? (
+        db
+          .prepare('SELECT status FROM picks WHERE pick_date = ? AND round = ?')
+          .get(date, round) as { status: string } | undefined
+      )?.status
+    : undefined;
   console.log(
-    chosen
-      ? `\n  Chosen: ${chosen.title}. Tomorrow brings five more.\n`
-      : `\n  Choose one:  npm run slate -- --choose <tmdb_id>\n`,
+    !chosen
+      ? `\n  Choose one:  npm run slate -- --choose <tmdb_id>\n`
+      : status === 'watched'
+        ? `\n  Watched: ${chosen.title}. Another five:  npm run slate -- --again\n`
+        : `\n  Chosen: ${chosen.title}. Mark it:  npm run slate -- --watched\n`,
   );
 
   db.close();

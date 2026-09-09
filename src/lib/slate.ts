@@ -3,7 +3,7 @@ import { loadMovements } from '../coverage';
 import { createEngine, loadState } from '../engine';
 import { loadLineage } from '../engine/lineage';
 import { activeCampaign, drawCampaignSlate, endCampaign } from '../engine/campaign';
-import { drawSlate, persistSlate } from '../engine/slate';
+import { currentRound, drawSlate, offeredOn, persistSlate } from '../engine/slate';
 import { db, today } from './db';
 
 /** One film on the slate, with everything its card renders. */
@@ -42,19 +42,41 @@ export interface FilmCard {
   timesPassed: number;
 }
 
+/** A film settled in an earlier round of the same day. */
+export interface EarlierPick {
+  round: number;
+  tmdbId: number;
+  title: string;
+  year: number | null;
+  posterPath: string | null;
+  directors: string[];
+  status: 'pending' | 'watched' | 'skipped';
+}
+
 export interface SlateView {
   date: string;
+  /** Which round these five belong to. Round 1 is the day's first slate. */
+  round: number;
   kind: 'blind-spot' | 'junk-valve';
   poolSize: number;
   region: string;
   films: FilmCard[];
-  /** The film chosen today, once one has been. */
+  /** The film chosen in this round, once one has been. */
   chosen: { tmdbId: number; status: 'pending' | 'watched' | 'skipped' } | null;
   /** The chosen film has fallen out of the pool, so re-choosing is allowed. */
   chosenIsStale: boolean;
   streak: number;
-  /** Set when today's five came from a campaign queue rather than a draw. */
+  /** Set when these five came from a campaign queue rather than a draw. */
   campaignId: number | null;
+  /** Films already settled today, oldest first. Empty on a single-round day. */
+  earlier: EarlierPick[];
+  /**
+   * This round's film is watched, so another five can be drawn.
+   *
+   * The one condition, and the whole reason a second round is not a reroll:
+   * you reach it by having watched something, never by disliking something.
+   */
+  canDrawAnother: boolean;
 }
 
 interface SlateRow {
@@ -99,52 +121,104 @@ const SELECT_SLATE = `
                             WHERE pk.pick_date = older.slate_date
                               AND pk.tmdb_id = older.tmdb_id)) AS times_passed
   FROM slates s JOIN tmdb_films t ON t.tmdb_id = s.tmdb_id
-  WHERE s.slate_date = ?
+  WHERE s.slate_date = ? AND s.round = ?
   ORDER BY s.position`;
 
 /**
- * Today's five films, drawn on first read and never again.
+ * Draws one round and writes it down.
+ *
+ * Shared by the first read of a day and by every round earned after it, so a
+ * second slate comes from the same mechanism as the first: same scoring, same
+ * campaign handling, same refusal to overwrite. The only thing a later round
+ * does differently is exclude what the day has already offered.
+ */
+function drawRound(handle: ReturnType<typeof db>, date: string, round: number): void {
+  loadMovements(handle);
+  loadLineage(handle);
+  const engine = createEngine(handle);
+  if (engine.candidates.length === 0) {
+    throw new Error('The candidate pool is empty. Run `npm run pool` first.');
+  }
+
+  const state = loadState(handle);
+  const campaign = activeCampaign(handle);
+  const exclude = round > 1 ? offeredOn(handle, date) : undefined;
+  const options = { round, ...(exclude ? { exclude } : {}) };
+
+  // A campaign only ever shapes a slate that does not exist yet. This is the
+  // whole reason it is safe: if starting one could reshape today's five, then
+  // "start a campaign, look, abandon it" would be a reroll with extra steps.
+  // A slate, once drawn, belongs to the round it was drawn for.
+  let result;
+  if (campaign) {
+    try {
+      result = drawCampaignSlate(engine, state, date, campaign, options);
+    } catch {
+      // The subject ran dry. The campaign is finished rather than broken, so
+      // it is closed and the round falls back to an ordinary weighted draw.
+      endCampaign(handle, 'completed', date);
+      result = drawSlate(engine, state, date, options);
+    }
+  } else {
+    result = drawSlate(engine, state, date, options);
+  }
+
+  persistSlate(handle, result);
+}
+
+/**
+ * A second film tonight, and a third, for as long as you keep watching them.
+ *
+ * The guard is the entire feature. A round only opens when the round before it
+ * was **watched** -- not chosen, watched. That is the line between "I finished
+ * a film, give me another" and "I do not fancy this one, give me another", and
+ * the second of those is the thing this project has refused from the start.
+ * Nothing about the earlier round changes: its film stays chosen, stays in the
+ * log, and stays yours. A day grows; it never gets rewritten.
+ */
+export function drawNextRound(date: string = today()): SlateView {
+  const handle = db();
+  const round = currentRound(handle, date);
+  if (round === 0) return ensureSlate(date);
+
+  const pick = handle
+    .prepare('SELECT tmdb_id, status FROM picks WHERE pick_date = ? AND round = ?')
+    .get(date, round) as { tmdb_id: number; status: string } | undefined;
+
+  if (!pick) {
+    throw new Error(
+      `Round ${round} is still open. Choose one of its films before asking for another five.`,
+    );
+  }
+  if (pick.status !== 'watched') {
+    throw new Error(
+      'Mark the film you chose as watched first. Another round is what watching one earns; ' +
+        'it is not a way to be handed a different five.',
+    );
+  }
+
+  drawRound(handle, date, round + 1);
+  return ensureSlate(date);
+}
+
+/**
+ * The round you are currently being asked to choose from, drawn on first read.
  *
  * Generate-on-read is safe because `persistSlate` refuses to overwrite, exactly
  * as `persistPick` does: two tabs opened at midnight cannot produce two
- * different slates.
+ * different slates. It only ever draws round 1 -- later rounds are earned
+ * through `drawNextRound` and never conjured by opening the page, or a day
+ * would quietly deal itself a new five every time you looked at it.
  */
 export function ensureSlate(date: string = today()): SlateView {
   const handle = db();
-  let rows = handle.prepare(SELECT_SLATE).all(date) as SlateRow[];
-
-  if (rows.length === 0) {
-    loadMovements(handle);
-    loadLineage(handle);
-    const engine = createEngine(handle);
-    if (engine.candidates.length === 0) {
-      throw new Error('The candidate pool is empty. Run `npm run pool` first.');
-    }
-
-    const state = loadState(handle);
-    const campaign = activeCampaign(handle);
-
-    // A campaign only ever shapes a slate that does not exist yet. This is the
-    // whole reason it is safe: if starting one could reshape today's five, then
-    // "start a campaign, look, abandon it" would be a reroll with extra steps.
-    // Today's slate, once drawn, belongs to today.
-    let result;
-    if (campaign) {
-      try {
-        result = drawCampaignSlate(engine, state, date, campaign);
-      } catch {
-        // The subject ran dry. The campaign is finished rather than broken, so
-        // it is closed and the day falls back to an ordinary weighted draw.
-        endCampaign(handle, 'completed', date);
-        result = drawSlate(engine, state, date);
-      }
-    } else {
-      result = drawSlate(engine, state, date);
-    }
-
-    persistSlate(handle, result);
-    rows = handle.prepare(SELECT_SLATE).all(date) as SlateRow[];
+  let round = currentRound(handle, date);
+  if (round === 0) {
+    drawRound(handle, date, 1);
+    round = 1;
   }
+
+  const rows = handle.prepare(SELECT_SLATE).all(date, round) as SlateRow[];
 
   const { region } = tmdbConfig();
   const ids = rows.map((row) => row.tmdb_id);
@@ -232,12 +306,50 @@ export function ensureSlate(date: string = today()): SlateView {
     };
   });
 
-  const pick = handle.prepare('SELECT tmdb_id, status FROM picks WHERE pick_date = ?').get(date) as
+  const pick = handle
+    .prepare('SELECT tmdb_id, status FROM picks WHERE pick_date = ? AND round = ?')
+    .get(date, round) as
     | { tmdb_id: number; status: 'pending' | 'watched' | 'skipped' }
     | undefined;
 
+  // Everything already settled today. On a one-round day this is empty and
+  // costs one indexed lookup, which is the right price for not having a second
+  // code path for the ordinary case.
+  const earlier = (
+    handle
+      .prepare(
+        `SELECT pk.round, pk.tmdb_id, pk.status, t.title, t.year, t.poster_path,
+                (SELECT group_concat(pe.name, ', ') FROM tmdb_film_crew c
+                 JOIN tmdb_people pe ON pe.person_id = c.person_id
+                 WHERE c.tmdb_id = pk.tmdb_id AND c.job = 'Director') AS directors
+         FROM picks pk JOIN tmdb_films t ON t.tmdb_id = pk.tmdb_id
+         WHERE pk.pick_date = ? AND pk.round < ?
+         ORDER BY pk.round`,
+      )
+      .all(date, round) as {
+      round: number;
+      tmdb_id: number;
+      status: 'pending' | 'watched' | 'skipped';
+      title: string;
+      year: number | null;
+      poster_path: string | null;
+      directors: string | null;
+    }[]
+  ).map(
+    (row): EarlierPick => ({
+      round: row.round,
+      tmdbId: row.tmdb_id,
+      title: row.title,
+      year: row.year,
+      posterPath: row.poster_path,
+      directors: row.directors ? row.directors.split(', ').filter(Boolean) : [],
+      status: row.status,
+    }),
+  );
+
   return {
     date,
+    round,
     kind: rows[0]?.kind ?? 'blind-spot',
     poolSize: rows[0]?.pool_size ?? 0,
     region,
@@ -248,6 +360,13 @@ export function ensureSlate(date: string = today()): SlateView {
       : false,
     streak: currentStreak(),
     campaignId: rows[0]?.campaign_id ?? null,
+    earlier,
+    // Watched, not merely chosen. A pending film is an evening still in
+    // progress, and a stale one is a record being repaired rather than a film
+    // that was seen.
+    canDrawAnother:
+      pick?.status === 'watched' &&
+      films.find((film) => film.tmdbId === pick.tmdb_id)?.inPool !== false,
   };
 }
 
@@ -257,16 +376,25 @@ export function ensureSlate(date: string = today()): SlateView {
  * A day you chose nothing and a day you chose and never marked it both break
  * the streak, because from the outside they are the same thing: the evening did
  * not happen.
+ *
+ * Counted per day rather than per pick, now that a day can hold several. A
+ * double bill is one day of the streak and not two -- the streak measures
+ * evenings kept, and watching two films is one evening kept well. The day
+ * counts if anything on it was watched, so a second round left pending after a
+ * first round watched does not retroactively erase the film you did watch.
  */
 export function currentStreak(): number {
   const rows = db()
-    .prepare('SELECT pick_date, status FROM picks ORDER BY pick_date DESC')
-    .all() as { pick_date: string; status: string }[];
+    .prepare(
+      `SELECT pick_date, MAX(status = 'watched') AS closed
+       FROM picks GROUP BY pick_date ORDER BY pick_date DESC`,
+    )
+    .all() as { pick_date: string; closed: number }[];
 
   let streak = 0;
   let expected: string | null = null;
   for (const row of rows) {
-    if (row.status !== 'watched') break;
+    if (row.closed !== 1) break;
     if (expected !== null && row.pick_date !== expected) break;
     streak += 1;
     expected = new Date(Date.parse(`${row.pick_date}T00:00:00Z`) - 86_400_000)

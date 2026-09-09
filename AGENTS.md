@@ -26,6 +26,12 @@ the five are drawn from the same weighted distribution, without replacement, so
 choosing among them is choosing among five blind spots rather than choosing
 whether to have one.
 
+A day can hold **more than one of those**, in rounds. Watching the film you
+chose earns another five, and so on for as long as the evening lasts. The guard
+is that it is *watching* that earns it, never disliking: round N+1 only exists
+once round N's pick is marked watched, so a second slate is a reward for
+finishing a film rather than an escape from one.
+
 There is also a **manual override**: search the pool and lock any of its films
 in for today. It reaches the pool, never past it, so it changes which blind spot
 you close and never whether you close one.
@@ -59,13 +65,27 @@ nobody was ever going to work through a filmography by accident.
 
 ## Rules that matter
 
-- **No reroll.** A day resolves to exactly one film and choosing is final.
-  `persistPickRecord` is the single door into `picks` and refuses to overwrite;
-  `persistSlate` refuses to redraw a slate. Do not add a way around either.
-  Neither the slate nor the override relaxes this: they widen what you may
-  choose, once. `lockInFilm` goes through `chooseFromSlate` and therefore
-  through the same door, and it fails on a second use exactly as a second click
-  does.
+- **No reroll.** A **round** resolves to exactly one film and choosing is final.
+  `persistPickRecord` is the single door into `picks` and refuses to overwrite,
+  keyed on (date, round); `persistSlate` refuses to redraw a slate, keyed the
+  same way. Both keys are the schema's, not a guard in code. Do not add a way
+  around either. Neither the slate nor the override relaxes this: they widen
+  what you may choose, once. `lockInFilm` goes through `chooseFromSlate` and
+  therefore through the same door, and it fails on a second use exactly as a
+  second click does.
+- **A round is earned by watching, not by asking.** `drawNextRound` refuses
+  unless the current round's pick exists and its status is `watched` -- pending
+  is not enough, and that is the whole distinction between "I finished a film,
+  give me another" and "I do not fancy this one, give me another". Do not
+  weaken it to merely-chosen: a day would then be able to strand a pick it
+  never watched and take a different film instead, which is a reroll with a
+  longer receipt. `unresolvePick` refuses in the mirror case, when a later
+  round has already been drawn on the strength of this one. `report.ts` checks
+  the invariant across the whole log ("every round earned"), and the RSS cron
+  draws round 1 only -- a scheduled job cannot know whether you watched
+  anything. Rounds after the first exclude every film the day has already
+  offered, so a second slate is five new films rather than the four you passed
+  over plus one.
 - **A campaign never reshapes a slate that already exists.** It applies to the
   next slate drawn, never today's -- checked in `ensureSlate`, which only draws
   when the day has no rows. Without that rule, "start a campaign, look, abandon
@@ -82,12 +102,14 @@ nobody was ever going to work through a filmography by accident.
   anything", which would make the rest of this project decorative.
   There is exactly one carve-out and it is not a reroll: `rechooseStalePick`
   replaces a chosen film that has fallen out of the pool after a rebuild, with
-  another film **from that same day's slate**, and refuses in every other case.
+  another film **from that same round's slate** -- the round is read off the
+  replacement's own slate row, so an evening's film cannot quietly replace an
+  afternoon's -- and refuses in every other case.
   Disliking the film is not a qualifying condition. The superseded row is kept
   in `pick_redraws`. `unresolvePick` undoes a mis-clicked watched; the film does
   not change.
 - **Nothing is dropped silently.** This now includes the four films you did not
-  choose: they stay in `slates`. A film the engine offers repeatedly that you
+  choose in every round of every day: they stay in `slates`. A film the engine offers repeatedly that you
   never take is real signal and deleting the losers would throw it away.
 - **The CSVs are the source of truth**, not the tables built from them. Anything
   the UI writes must be written back out to the file.

@@ -155,6 +155,9 @@ export function loadState(db: Db): EngineState {
       .all() as { pick_date: string; origin_country: string | null; year: number | null }[]
   ).reverse();
 
+  // Every director picked on that date, not just the one film's. A day can hold
+  // several rounds now, and the cooldown asks "have I seen this director
+  // lately", which is a question about the day rather than about the round.
   const directorsOf = db.prepare(
     `SELECT c.person_id FROM picks p
      JOIN tmdb_film_crew c ON c.tmdb_id = p.tmdb_id AND c.job = 'Director'
@@ -448,6 +451,8 @@ export function draw(engine: Engine, state: EngineState, date: string): DrawResu
 /** One row of `picks`, already flattened. `reason` is the serialised breakdown. */
 export interface PickRecord {
   date: string;
+  /** Which of the day's rounds this settles. Round 1 is the day's first slate. */
+  round: number;
   tmdbId: number;
   kind: PickKind;
   seed: string;
@@ -463,19 +468,33 @@ export interface PickRecord {
 /**
  * The one door into `picks`, and the one place that refuses to overwrite.
  *
- * Both callers go through here on purpose: a film drawn as the day's single
- * pick and a film chosen off the day's slate are the same commitment, and
- * having two inserts would mean having two chances to forget the guard.
+ * Every caller goes through here on purpose: a film drawn as the day's single
+ * pick, a film chosen off a slate and a film locked in by hand are the same
+ * commitment, and having three inserts would mean having three chances to
+ * forget the guard.
+ *
+ * The guard is now keyed on (date, round) rather than on date. That is not a
+ * loosening of it: a round still resolves to exactly one film and choosing is
+ * still final. What changed is that a day can hold more than one round, and a
+ * later round only exists because the earlier one was watched -- so reaching
+ * this a second time on the same day means you finished a film, not that you
+ * changed your mind about one.
  */
 export function persistPickRecord(db: Db, record: PickRecord): void {
-  const existing = db.prepare('SELECT tmdb_id FROM picks WHERE pick_date = ?').get(record.date);
-  if (existing) throw new Error(`${record.date} already has a pick. There is no reroll.`);
+  const existing = db
+    .prepare('SELECT tmdb_id FROM picks WHERE pick_date = ? AND round = ?')
+    .get(record.date, record.round);
+  if (existing) {
+    throw new Error(
+      `${record.date} round ${record.round} already has a pick. There is no reroll.`,
+    );
+  }
 
   db.prepare(
     `INSERT INTO picks
-       (pick_date, tmdb_id, kind, seed, weight, share, top_share, pool_size, reason_json,
+       (pick_date, round, tmdb_id, kind, seed, weight, share, top_share, pool_size, reason_json,
         lineage_from, lineage_rationale, status, created_at)
-     VALUES (@date, @tmdbId, @kind, @seed, @weight, @share, @topShare, @poolSize, @reason,
+     VALUES (@date, @round, @tmdbId, @kind, @seed, @weight, @share, @topShare, @poolSize, @reason,
              @lineageFrom, @lineageRationale, 'pending', @createdAt)`,
   ).run({ ...record, createdAt: new Date().toISOString() });
 }
@@ -484,6 +503,7 @@ export function persistPickRecord(db: Db, record: PickRecord): void {
 export function persistPick(db: Db, result: DrawResult): void {
   persistPickRecord(db, {
     date: result.date,
+    round: 1,
     tmdbId: result.chosen.candidate.tmdbId,
     kind: result.kind,
     seed: result.seed,
@@ -504,13 +524,13 @@ export function persistPick(db: Db, result: DrawResult): void {
  * strand a pick on a film that is no longer a candidate, and that is a stale
  * record rather than a choice anyone made.
  */
-export function isPickStale(db: Db, date: string): boolean {
+export function isPickStale(db: Db, date: string, round = 1): boolean {
   const row = db
     .prepare(
       `SELECT p.tmdb_id, EXISTS (SELECT 1 FROM pool WHERE tmdb_id = p.tmdb_id) AS in_pool
-       FROM picks p WHERE p.pick_date = ?`,
+       FROM picks p WHERE p.pick_date = ? AND p.round = ?`,
     )
-    .get(date) as { tmdb_id: number; in_pool: number } | undefined;
+    .get(date, round) as { tmdb_id: number; in_pool: number } | undefined;
   return row !== undefined && row.in_pool === 0;
 }
 
@@ -521,21 +541,43 @@ export function isPickStale(db: Db, date: string): boolean {
  * because "watched" and "skip" sit next to each other and a misclick should not
  * need a database edit to undo.
  */
-export function unresolvePick(db: Db, date: string): void {
+export function unresolvePick(db: Db, date: string, round = 1): void {
+  // A later round only exists because this one was watched, so un-watching it
+  // would leave the day holding a slate it never earned.
+  //
+  // Read from `slates` rather than `picks`: the later round is unearned the
+  // moment it is *drawn*, and it may well have been drawn and not yet chosen
+  // from -- which is exactly the window in which this would otherwise slip
+  // through.
+  const later = db
+    .prepare('SELECT MAX(round) AS n FROM slates WHERE slate_date = ?')
+    .get(date) as { n: number | null } | undefined;
+  if ((later?.n ?? round) > round) {
+    throw new Error(
+      `${date} has a round ${later?.n} that this one earned. Undo that first.`,
+    );
+  }
+
   const changed = db
     .prepare(
       `UPDATE picks SET status = 'pending', resolved_on = NULL
-       WHERE pick_date = ? AND status <> 'pending'`,
+       WHERE pick_date = ? AND round = ? AND status <> 'pending'`,
     )
-    .run(date).changes;
-  if (changed === 0) throw new Error(`No resolved pick on ${date}`);
+    .run(date, round).changes;
+  if (changed === 0) throw new Error(`No resolved pick on ${date} round ${round}`);
 }
 
-export function resolvePick(db: Db, date: string, status: 'watched' | 'skipped'): void {
+export function resolvePick(
+  db: Db,
+  date: string,
+  status: 'watched' | 'skipped',
+  round = 1,
+): void {
   const changed = db
     .prepare(
-      `UPDATE picks SET status = ?, resolved_on = ? WHERE pick_date = ? AND status = 'pending'`,
+      `UPDATE picks SET status = ?, resolved_on = ?
+       WHERE pick_date = ? AND round = ? AND status = 'pending'`,
     )
-    .run(status, new Date().toISOString().slice(0, 10), date).changes;
-  if (changed === 0) throw new Error(`No pending pick on ${date}`);
+    .run(status, new Date().toISOString().slice(0, 10), date, round).changes;
+  if (changed === 0) throw new Error(`No pending pick on ${date} round ${round}`);
 }

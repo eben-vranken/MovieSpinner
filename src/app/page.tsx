@@ -8,6 +8,7 @@ import { PoolShape } from './_sections/PoolShape';
 import { Taste } from './_sections/Taste';
 import { Dashboard } from './_shell/Dashboard';
 import type { TabSpec } from './_shell/Dashboard';
+import { Refresh } from './_shell/Refresh';
 import { LineagePanel } from './_lineage/LineagePanel';
 import { Setup } from './_setup/Setup';
 import { ImportPanel } from './_setup/ImportPanel';
@@ -149,9 +150,15 @@ export default async function Page() {
           <p className="mt-3 text-xs text-muted">
             {status.lastImport?.username ? `${status.lastImport.username} · ` : ''}
             {status.watched.toLocaleString()} films from an export imported{' '}
-            {status.lastImport?.importedAt.slice(0, 10) ?? 'at some point'}. The daily sync reads
-            the RSS feed; a full export refresh is the only way to update the coverage numbers.
+            {status.lastImport?.importedAt.slice(0, 10) ?? 'at some point'}. Every sync -- this
+            button, the daily cron, or <code>npm run sync</code> -- folds newly watched films from
+            the Letterboxd feed straight into coverage, Taste, Browse and the pool. It only ever
+            sees your last ~50 diary entries, so a full export refresh is still worth doing every
+            so often, and is the only way to pick up an edited or deleted diary entry.
           </p>
+          <div className="mt-3">
+            <Refresh />
+          </div>
           {/* Last thing on the page, and the only one that deletes something an
               export cannot rebuild. */}
           <div className="mt-8">

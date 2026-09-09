@@ -9,20 +9,24 @@ import { lockInFilm as lockIn } from '../engine/lock';
 import { rechooseStalePick } from '../engine/redraw';
 import { rewriteLineageFile } from '../engine/lineage-write';
 import { db, today } from '../lib/db';
-import { isRunning, runPipeline, saveUpload } from '../setup/pipeline';
+import { drawNextRound } from '../lib/slate';
+import { isRunning, letterboxdUser, runPipeline, saveUpload } from '../setup/pipeline';
 import { resetEverything } from '../setup/reset';
+import { sync } from '../sync';
 
 /**
  * Everything the page can do to a day.
  *
- * There are five verbs and no sixth. You choose one of the five films, you lock
- * in a different one from the pool by hand, you mark it watched, you undo a
- * misclick, and -- only when the pool has been rebuilt out from under a film
- * you already chose -- you re-choose from that same day's slate.
+ * There are six verbs and no seventh. You choose one of the five films, you
+ * lock in a different one from the pool by hand, you mark it watched, you undo
+ * a misclick, you ask for another five once you have watched the last one, and
+ * -- only when the pool has been rebuilt out from under a film you already
+ * chose -- you re-choose from that same round's slate.
  *
- * None of them can change which five films you were offered, and every one of
- * them still ends at `persistPickRecord`, which refuses to overwrite. The
- * override widens what you may choose; it does not let you choose twice.
+ * None of them can change which films you were offered, and every one of them
+ * still ends at `persistPickRecord`, which refuses to overwrite. The override
+ * widens what you may choose; the next round widens how many evenings a day
+ * can hold. Neither lets you choose twice for the same round.
  */
 
 /** Commit to one of today's five. Final: `persistPickRecord` refuses a second. */
@@ -57,21 +61,49 @@ export async function lockInFilm(date: string, tmdbId: number): Promise<LockResu
   }
 }
 
-export async function markWatched(date: string): Promise<void> {
-  resolvePick(db(), date, 'watched');
+export async function markWatched(date: string, round: number): Promise<void> {
+  resolvePick(db(), date, 'watched', round);
   revalidatePath('/');
 }
 
 /** Undo a misclick. The film does not change, only the bookkeeping about it. */
-export async function undoWatched(date: string): Promise<void> {
-  unresolvePick(db(), date);
+export async function undoWatched(date: string, round: number): Promise<void> {
+  unresolvePick(db(), date, round);
   revalidatePath('/');
+}
+
+/**
+ * Another five, because you watched the last one.
+ *
+ * The only way a day gets a second film, and it costs exactly one thing: the
+ * film you chose has to be marked watched. That is what separates this from a
+ * reroll -- you are not swapping tonight's film for a different one, you are
+ * saying tonight had room for two. Nothing about the earlier round moves.
+ *
+ * Returns its refusal rather than throwing it, like `lockInFilm` does, because
+ * the refusals are the informative kind: the round is still open, or the film
+ * is chosen but not watched yet.
+ */
+export type RoundResult = { ok: true; round: number } | { ok: false; error: string };
+
+export async function drawAnotherRound(date: string): Promise<RoundResult> {
+  try {
+    const slate = drawNextRound(date);
+    revalidatePath('/');
+    return { ok: true, round: slate.round };
+  } catch (cause) {
+    return {
+      ok: false,
+      error: cause instanceof Error ? cause.message : 'Could not draw another round.',
+    };
+  }
 }
 
 /**
  * Replaces a chosen film that is no longer in the pool with another from the
  * same slate. Refuses unless the film has genuinely fallen out, which is what
- * keeps this from being the reroll the project does not have.
+ * keeps this from being the reroll the project does not have. The round is read
+ * off the replacement's slate row rather than passed in.
  */
 export async function rechooseFilm(date: string, tmdbId: number): Promise<void> {
   rechooseStalePick(db(), date, tmdbId);
@@ -244,4 +276,32 @@ export async function deleteLineageEdge(from: number, to: number): Promise<void>
     .run(from, to);
   rewriteLineageFile(handle);
   revalidatePath('/');
+}
+
+export type RefreshResult = { ok: true; summary: string } | { ok: false; error: string };
+
+/**
+ * The manual version of the same job the cron runs: read the Letterboxd
+ * feed, fold anything newly watched into coverage/Taste/Browse/the pool, and
+ * close out today's pick if the feed shows it watched. See `sync()` in
+ * src/sync/index.ts for what "fold in" means -- it is the same merge either
+ * way, just triggered by a click instead of a schedule.
+ */
+export async function refreshFromFeed(): Promise<RefreshResult> {
+  try {
+    const handle = db();
+    const result = await sync(handle, letterboxdUser(handle));
+    revalidatePath('/');
+
+    const parts = [
+      `checked ${result.entries} recent entries`,
+      result.merge.watchedAdded > 0 ? `${result.merge.watchedAdded} newly watched merged in` : null,
+      result.resolved.length > 0 ? `${result.resolved.length} pick${result.resolved.length === 1 ? '' : 's'} closed out` : null,
+      result.merge.failures.length > 0 ? `${result.merge.failures.length} TMDB lookup(s) failed, will retry next sync` : null,
+    ].filter(Boolean);
+
+    return { ok: true, summary: parts.join(', ') };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : 'Could not read the feed.' };
+  }
 }

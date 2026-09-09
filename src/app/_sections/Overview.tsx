@@ -56,7 +56,11 @@ export function Overview({ data, streak }: { data: Analytics; streak: number }) 
         <StatTile
           label="Days played"
           value={totals.daysPlayed}
-          note={`${totals.filmsOffered} films offered, ${totals.chosen} chosen`}
+          note={
+            totals.roundsPlayed > totals.daysPlayed
+              ? `${totals.roundsPlayed} rounds, ${totals.chosen} films chosen`
+              : `${totals.filmsOffered} films offered, ${totals.chosen} chosen`
+          }
         />
         <StatTile
           label="Streak"

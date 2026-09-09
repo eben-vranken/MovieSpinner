@@ -6,11 +6,16 @@ import type { PickKind } from './index';
  * Choosing a film off today's slate.
  *
  * This is where the product changed and the rule did not. The engine used to
- * hand over one film; it now hands over five and you pick. But a day still
+ * hand over one film; it now hands over five and you pick. But a round still
  * resolves to exactly one film and choosing is still final, because
  * `persistPickRecord` refuses to overwrite an existing row. Clicking a second
  * film after you have already chosen is a reroll wearing a different hat, and
  * it fails here rather than being politely disabled in the UI.
+ *
+ * The round is read off the slate row rather than passed in. A film is offered
+ * at most once a day, so the row already knows which round it belongs to, and
+ * taking the caller's word for it would be a way to settle round 2 with a film
+ * from round 1.
  *
  * Nothing is recomputed. The weight, share and reason written into `picks` are
  * the ones recorded when the slate was drawn, so the card can say what the
@@ -19,6 +24,7 @@ import type { PickKind } from './index';
 
 interface SlateRow {
   tmdb_id: number;
+  round: number;
   kind: PickKind;
   seed: string;
   weight: number;
@@ -41,6 +47,7 @@ export function chooseFromSlate(db: Db, date: string, tmdbId: number): void {
 
   persistPickRecord(db, {
     date,
+    round: row.round,
     tmdbId: row.tmdb_id,
     kind: row.kind,
     seed: row.seed,

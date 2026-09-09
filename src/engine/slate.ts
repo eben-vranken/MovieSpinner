@@ -29,6 +29,8 @@ export interface SlateEntry {
 
 export interface SlateResult {
   date: string;
+  /** Which of the day's rounds this is. Round 1 is the day's first slate. */
+  round: number;
   kind: PickKind;
   seed: string;
   entries: SlateEntry[];
@@ -39,20 +41,43 @@ export interface SlateResult {
   campaignId?: number;
 }
 
+/**
+ * What a later round needs to know that the first one does not.
+ *
+ * `exclude` is the day's earlier rounds. A film is offered at most once a day,
+ * so round 2 is five films you have not been shown today rather than the four
+ * you passed over plus one -- being handed the same near-slate again would make
+ * a second round feel like a reroll even though it is not one.
+ */
+export interface DrawOptions {
+  round?: number;
+  size?: number;
+  exclude?: ReadonlySet<number>;
+}
+
 export function drawSlate(
   engine: Engine,
   state: EngineState,
   date: string,
-  size: number = engine.tuning.slateSize,
+  { round = 1, size = engine.tuning.slateSize, exclude }: DrawOptions = {},
 ): SlateResult {
-  const { kind, scored } = scoreAll(engine, state, date);
+  const { kind, scored: everything } = scoreAll(engine, state, date);
+  const scored =
+    exclude && exclude.size > 0
+      ? everything.filter((entry) => !exclude.has(entry.candidate.tmdbId))
+      : everything;
   if (scored.length === 0) throw new Error(`Nothing was available to draw on ${date}`);
 
   // A separate seed namespace from the old one-a-day draw. Reusing that seed
   // would make position 0 of the slate identical to the film the previous
   // version of this app would have handed over, which looks like a bug the
   // first time you notice it and is not worth the coincidence.
-  const seed = `moviespinner:slate:${kind}:${date}`;
+  //
+  // Round 1 keeps the bare date seed it has always had, so every slate already
+  // drawn and every simulation still reproduces exactly. Later rounds are a
+  // suffix rather than a different scheme, because a second round drawn from
+  // the same stream would hand back the same five films minus the taken one.
+  const seed = `moviespinner:slate:${kind}:${date}${round > 1 ? `:r${round}` : ''}`;
   const random = randomForSeed(seed);
 
   const weights = scored.map((entry) => entry.weight);
@@ -77,6 +102,7 @@ export function drawSlate(
 
   return {
     date,
+    round,
     kind,
     seed,
     entries,
@@ -92,19 +118,25 @@ export function drawSlate(
  * recomputed tomorrow against a grown watched set would offer a different five
  * films, and "here are today's five" would silently become "here are five films
  * as of whenever you last looked".
+ *
+ * Keyed on (date, round), so a day's second round is a new slate rather than an
+ * overwrite of its first. The refusal is unchanged in strength -- a round that
+ * has been drawn can never be drawn again.
  */
 export function persistSlate(db: Db, result: SlateResult): void {
   const existing = db
-    .prepare('SELECT COUNT(*) AS n FROM slates WHERE slate_date = ?')
-    .get(result.date) as { n: number };
-  if (existing.n > 0) throw new Error(`${result.date} already has a slate.`);
+    .prepare('SELECT COUNT(*) AS n FROM slates WHERE slate_date = ? AND round = ?')
+    .get(result.date, result.round) as { n: number };
+  if (existing.n > 0) {
+    throw new Error(`${result.date} already has a slate for round ${result.round}.`);
+  }
 
   const insert = db.prepare(
     `INSERT INTO slates
-       (slate_date, tmdb_id, position, kind, seed, weight, share, top_share, pool_size,
+       (slate_date, round, tmdb_id, position, kind, seed, weight, share, top_share, pool_size,
         reason_json, lineage_from, lineage_rationale, created_at, campaign_id)
-     VALUES (@date, @tmdbId, @position, @kind, @seed, @weight, @share, @topShare, @poolSize,
-             @reason, @lineageFrom, @lineageRationale, @createdAt, @campaignId)`,
+     VALUES (@date, @round, @tmdbId, @position, @kind, @seed, @weight, @share, @topShare,
+             @poolSize, @reason, @lineageFrom, @lineageRationale, @createdAt, @campaignId)`,
   );
 
   const createdAt = new Date().toISOString();
@@ -112,6 +144,7 @@ export function persistSlate(db: Db, result: SlateResult): void {
     for (const entry of result.entries) {
       insert.run({
         date: result.date,
+        round: result.round,
         tmdbId: entry.scored.candidate.tmdbId,
         position: entry.position,
         kind: result.kind,
@@ -128,4 +161,28 @@ export function persistSlate(db: Db, result: SlateResult): void {
       });
     }
   })();
+}
+
+/**
+ * The highest round drawn on a date. Zero when the day has no slate at all.
+ *
+ * "The current round" is always the last one drawn, never the last one
+ * resolved: a round you have been offered and not chosen from is still the
+ * round you are in, and skipping past it is the reroll this project does not
+ * have.
+ */
+export function currentRound(db: Db, date: string): number {
+  const row = db.prepare('SELECT MAX(round) AS n FROM slates WHERE slate_date = ?').get(date) as
+    | { n: number | null }
+    | undefined;
+  return row?.n ?? 0;
+}
+
+/** Every film already offered on a date, so a later round does not repeat one. */
+export function offeredOn(db: Db, date: string): Set<number> {
+  return new Set(
+    (db.prepare('SELECT tmdb_id FROM slates WHERE slate_date = ?').all(date) as {
+      tmdb_id: number;
+    }[]).map((row) => row.tmdb_id),
+  );
 }
